@@ -130,9 +130,10 @@ model User {
   image         String?
   createdAt     DateTime  @default(now())
 
-  accounts    Account[]
-  memberships Membership[]
-  invitesSent Invite[]
+  accounts      Account[]
+  memberships   Membership[]
+  invitesSent   Invite[]
+  importSources ImportSource[]
 }
 
 model Account {
@@ -172,6 +173,8 @@ model Workspace {
   launches       Launch[]
   checklistItems ChecklistItem[]
   activity       ActivityEvent[]
+  importSources  ImportSource[]
+  importRuns     ImportRun[]
 }
 
 model Membership {
@@ -497,4 +500,62 @@ model ActivityEvent {
   @@index([createdAt])
   @@index([entityType, entityId])
   @@index([workspaceId])
+}
+
+// ---------- Imports (CSV / Google Sheets) ----------
+
+enum ImportKind {
+  CSV
+  SHEET
+}
+
+// A remembered import: where rows come from and how their columns map to fields.
+// sourceKey identifies "the same source" for one-click re-imports:
+//   SHEET: "sheet:<spreadsheetId>:<tabId>";  CSV: "csv:<header signature>".
+model ImportSource {
+  id              String     @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  entityType      String // course | cohort | instructor | sme | module
+  kind            ImportKind
+  sourceKey       String
+  name            String // file name or "Spreadsheet · Tab"
+  spreadsheetId   String?
+  sheetId         Int?
+  sheetTitle      String?
+  headerSignature String
+  mapping         Json // { "<column header>": "<field name>" | null }
+  createdById     String?
+  createdBy       User?      @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  lastSyncedAt    DateTime?
+
+  runs ImportRun[]
+
+  @@unique([workspaceId, entityType, sourceKey])
+  @@unique([id, workspaceId])
+  @@index([workspaceId])
+}
+
+// One import or sync, with what it did. Row errors are capped (see lib/data/imports.ts).
+model ImportRun {
+  id          String        @id @default(cuid())
+  workspaceId String
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sourceId    String?
+  source      ImportSource? @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  entityType  String
+  trigger     String // import | sync
+  sourceName  String
+  actorName   String
+  created     Int
+  updated     Int
+  unchanged   Int
+  skipped     Int
+  errors      Json // [{ row: number, reasons: string[] }]
+  createdAt   DateTime      @default(now())
+
+  @@unique([id, workspaceId])
+  @@index([workspaceId, createdAt])
 }

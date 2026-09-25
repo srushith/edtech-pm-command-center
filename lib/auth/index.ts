@@ -8,6 +8,7 @@ import Google from "next-auth/providers/google";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { db } from "@/lib/db";
 import { isSignInAllowed } from "@/lib/auth/access";
+import { saveGoogleGrant } from "@/lib/google/sheets";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   // The adapter is typed against @prisma/client; ours is generated to lib/generated.
@@ -17,6 +18,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   pages: { signIn: "/signin", error: "/signin" },
   // Needed behind `next start` and most hosts; the host header is set by our own server/proxy.
   trustHost: true,
+  events: {
+    // Keep the latest Google tokens and granted scopes (e.g. Sheets access added later).
+    async signIn({ account }) {
+      if (account) await saveGoogleGrant(account);
+    },
+  },
   callbacks: {
     async signIn({ user, profile }) {
       if (profile && profile.email_verified !== true) return false;

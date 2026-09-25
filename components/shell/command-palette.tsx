@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, ChevronUp, FilterX, Loader2, Moon, Plus, Presentation, Search, Sun, UserRound } from "lucide-react";
+import { ChevronDown, ChevronUp, FileUp, FilterX, Loader2, Moon, Plus, Presentation, Search, Sun, UserRound } from "lucide-react";
 import { useTheme } from "next-themes";
 import {
   Command,
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/command";
 import { ALL_SECTIONS, SECTIONS } from "@/lib/nav";
 import { RECORD_TYPES, RECORDS } from "@/lib/records/registry";
+import { IMPORT_TYPES } from "@/lib/import/mapping";
 import { activeFilterCount, applyFilters, EMPTY_FILTERS, parseFilters } from "@/lib/filters";
 import { MODE_LABELS } from "@/lib/mode";
 import { GROUP_LIMIT, highlightSegments, matchesAll, parseQuery, searchRecords, suggestQueries } from "@/lib/search";
@@ -160,10 +161,17 @@ function PaletteContent({
       ? []
       : terms.length === 0
         ? [{ id: "quick-add", text: "Quick add…", keywords: "new create add", icon: Plus, shortcut: "C", onSelect: () => setQuickAddOpen(true) }]
-        : RECORD_TYPES.map((t) => ({
-            id: `new-${t}`, text: `New ${RECORDS[t].noun}…`, keywords: "add create quick", icon: Plus,
-            onSelect: () => openRecordForm(t),
-          }))),
+        : [
+            ...RECORD_TYPES.map((t) => ({
+              id: `new-${t}`, text: `New ${RECORDS[t].noun}…`, keywords: "add create quick", icon: Plus,
+              onSelect: () => openRecordForm(t),
+            })),
+            ...IMPORT_TYPES.map((t) => ({
+              id: `import-${t}`, text: `Import ${RECORDS[t].noun.endsWith("s") ? RECORDS[t].noun : `${RECORDS[t].noun}s`}…`,
+              keywords: "csv google sheet upload sync", icon: FileUp,
+              onSelect: () => router.push(`/import?type=${t}`),
+            })),
+          ]),
   ].filter((a) => matchesAll([a.text, a.keywords], terms));
   const sections = ALL_SECTIONS.filter((s) => matchesAll([s.title, s.description], terms));
 

@@ -87,6 +87,15 @@ the sidebar footer and in ⌘K. The sidebar header is the workspace switcher.
   - Derived fields are never form inputs: sentiment, learnerId, issue code, cohort status, module
     order, instructor rating, and session rating once the session has feedback.
   - "Now" is the wall clock for user rows and DEMO_TODAY for demo rows (`nowFor` in lib/domain/time.ts).
+- Imports (`lib/data/imports.ts`) validate every row with `validateRecord` (the Add form's rules)
+  and write with `persistRecord` in one transaction; never a separate import-only schema.
+  Rows match existing records by name (modules: title within course); a code/email belonging to
+  another record makes the row invalid rather than guessed. Blank cells keep existing values.
+  Imports never delete. Sync uses the clicking user's own Google grant; refresh tokens are
+  encrypted at rest (`lib/google/crypto.ts`).
+- AI goes through `getAIProvider(ctx)` in `lib/ai/provider.ts` only (mock until AI settings exist).
+  Every AI feature must also work fully without it (provider returns null), and AI output is
+  shown as a labelled "AI Insight" with its evidence and must be accepted by the user.
 - Secrets only in `.env.local` (gitignored via `.env*`); `.env.example` lists every key, no values.
 - Schema changes: edit `prisma/schema.prisma`, then `npm run db:migrate` and commit the migration.
 - Tests: `npm test` runs against `DATABASE_URL_TEST` only (it wipes that database).
@@ -109,6 +118,12 @@ the sidebar footer and in ⌘K. The sidebar header is the workspace switcher.
      attendance) and Learner feedback; Add on each section page, Edit in tables and from ⌘K;
      Quick add (C); ActivityEvent on every save; ⌘K reloads after saves; viewers get no
      Add/Edit and the server enforces the role
+   - Part C: TBD
+   - Part D: import for Courses, Cohorts, Instructors, SMEs, Modules from CSV or Google Sheets
+     (read-only Sheets permission requested only when chosen); column mapping by hand, with
+     AI suggestions via lib/ai/provider.ts; preview of new/updated/unchanged/invalid rows using
+     the Add forms' validation; match by name (code/email guard); saved mappings; one-way
+     "Sync now" for linked sheets; one ActivityEvent per import; editors and owners only
 2. Command Center home: attention queue, what changed, risk radar, portfolio health, daily brief
 3. Class Health + Learner Voice: low-rated detection, "Why?" drill-down, feedback clusters, sentiment
 4. Cohorts, timeline (collision warnings), launches, launch checklists

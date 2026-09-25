@@ -128,7 +128,7 @@ export type CourseOpt = { id: string; code: string; name: string; region: string
 export type CohortOpt = { id: string; code: string; name: string; courseId: string; startDate: string; endDate: string; enrolledLearners: number };
 export type ModuleOpt = { id: string; title: string; courseId: string };
 export type InstructorOpt = { id: string; name: string; hiringStage: string };
-export type SmeOpt = { id: string; name: string };
+export type SmeOpt = { id: string; name: string; email: string };
 export type SessionOpt = {
   id: string; title: string; cohortId: string; status: string; scheduledAt: string;
   attendance: number | null; feedbackCount: number; instructorId: string;

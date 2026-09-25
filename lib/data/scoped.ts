@@ -15,6 +15,7 @@ import type { WorkspaceContext } from "@/lib/auth/access";
 export const TENANT_MODELS = new Set([
   "Course", "Cohort", "Instructor", "SME", "Module", "ModuleVersion", "Session",
   "LearnerFeedback", "Issue", "Project", "Launch", "ChecklistItem", "ActivityEvent",
+  "ImportSource", "ImportRun",
 ]);
 
 const READS = new Set([

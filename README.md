@@ -28,3 +28,16 @@ Sign in with Google as an email in `ALLOWED_EMAILS`, create a workspace, and cho
 Demo data is deterministic (fixed anchor date in `lib/domain/time.ts`, seeded PRNG in
 `lib/demo/seed.ts`), so every demo workspace is identical. `/data` shows the current
 workspace's record counts and live integrity checks.
+
+## Importing from Google Sheets
+
+Import (CSV or Google Sheets) lives at `/import`. For Sheets, in the same Google Cloud
+project as sign-in:
+
+1. APIs & Services → Library → enable **Google Sheets API**.
+2. OAuth consent screen → Data access → add the scope
+   `https://www.googleapis.com/auth/spreadsheets.readonly`.
+
+The app asks each user for that read-only permission only when they choose "Google Sheet".
+It's a sensitive scope: fine for test users while the consent screen is in Testing, but
+publishing the app to everyone requires Google's verification.

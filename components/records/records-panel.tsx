@@ -1,4 +1,8 @@
+import Link from "next/link";
+import { FileUp } from "lucide-react";
 import { AddRecordButton, EditRecordButton } from "@/components/records/record-buttons";
+import { Button } from "@/components/ui/button";
+import { isImportType } from "@/lib/import/mapping";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { WorkspaceContext } from "@/lib/auth/access";
 import { hasRole } from "@/lib/auth/roles";
@@ -27,7 +31,16 @@ export async function RecordsPanel({ ctx, type, params }: { ctx: WorkspaceContex
             {filtered && " · filtered"}
           </span>
         </h3>
-        {canEdit && <div className="ml-auto"><AddRecordButton type={type} /></div>}
+        {canEdit && (
+          <div className="ml-auto flex gap-1.5">
+            {isImportType(type) && (
+              <Button size="sm" variant="ghost" render={<Link href={`/import?type=${type}`} />}>
+                <FileUp /> Import
+              </Button>
+            )}
+            <AddRecordButton type={type} />
+          </div>
+        )}
       </div>
       {t.rows.length === 0 ? (
         <p className="rounded-md border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">

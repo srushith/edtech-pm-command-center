@@ -2,6 +2,7 @@ import {
   BookOpen,
   BrainCircuit,
   Database,
+  FileUp,
   FolderKanban,
   GraduationCap,
   HeartPulse,
@@ -28,7 +29,8 @@ export type SectionId =
   | "operations"
   | "ai-insights"
   | "data"
-  | "settings";
+  | "settings"
+  | "import";
 
 export type Section = {
   id: SectionId;
@@ -77,7 +79,12 @@ export const SETTINGS_SECTION: Section = {
   description: "Workspace name, members, invites, roles and demo data.",
 };
 
-export const ALL_SECTIONS = [...SECTIONS, DATA_SECTION, SETTINGS_SECTION];
+export const IMPORT_SECTION: Section = {
+  id: "import", title: "Import", href: "/import", icon: FileUp, phase: "1.5", shortcut: "m",
+  description: "Import courses, cohorts, instructors, SMEs and modules from CSV or Google Sheets; sync linked sheets.",
+};
+
+export const ALL_SECTIONS = [...SECTIONS, DATA_SECTION, SETTINGS_SECTION, IMPORT_SECTION];
 
 export function sectionById(id: SectionId): Section {
   return ALL_SECTIONS.find((s) => s.id === id)!;

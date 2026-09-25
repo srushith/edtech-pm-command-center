@@ -48,7 +48,7 @@ export async function getFormOptions(ctx: WorkspaceContext): Promise<FormOptions
     }),
     db.module.findMany({ select: { id: true, title: true, courseId: true }, orderBy: [{ courseId: "asc" }, { order: "asc" }] }),
     db.instructor.findMany({ select: { id: true, name: true, hiringStage: true }, orderBy: { name: "asc" } }),
-    db.sME.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    db.sME.findMany({ select: { id: true, name: true, email: true }, orderBy: { name: "asc" } }),
     db.session.findMany({
       select: {
         id: true, title: true, cohortId: true, status: true, scheduledAt: true, attendance: true, instructorId: true,
@@ -76,8 +76,8 @@ type Handler = {
   display(row: Row): string;
   /** Server-only rules that need the database. */
   serverChecks?(db: ReturnType<typeof scopedDb>, data: Data, existing: Row | null): Promise<FieldErrors>;
-  /** Parsed form data -> Prisma data (flat), including derived fields. */
-  toData(data: Data, c: { lookup: Lookup; now: Date; db: ReturnType<typeof scopedDb>; existing: Row | null }): Promise<Data> | Data;
+  /** Parsed form data -> Prisma data (flat), including derived fields. Runs inside the write transaction. */
+  toData(data: Data, c: { lookup: Lookup; now: Date; db: Tx; existing: Row | null }): Promise<Data> | Data;
   /** Derived writes inside the transaction, after the record is saved. */
   after?(tx: Tx, row: Row, before: Row | null, ctx: WorkspaceContext): Promise<void>;
 };
@@ -316,6 +316,91 @@ export async function getRecordForEdit(ctx: WorkspaceContext, type: EntityType, 
   return row ? { ...h.toValues(row), _id: row.id, _instructorId: str(row.instructorId) } : null;
 }
 
+/** Shared lookups for validating one record or a whole import batch. */
+export type ValidationContext = { options: FormOptions; lookup: Lookup; now: Date };
+
+export async function validationContext(ctx: WorkspaceContext, now = new Date()): Promise<ValidationContext> {
+  const options = await getFormOptions(ctx);
+  return { options, lookup: makeLookup(options), now };
+}
+
+export type Validated =
+  | { ok: true; data: Data; existing: Row | null; before: Values | undefined }
+  | { ok: false; errors: FieldErrors };
+
+/**
+ * Everything the Add/Edit forms enforce, without writing: schema, cross-record checks,
+ * then server-only rules. Callers check the role. Used by saveRecord and by imports.
+ */
+export async function validateRecord(
+  ctx: WorkspaceContext,
+  type: EntityType,
+  existing: Row | null,
+  values: Values,
+  vc: ValidationContext,
+): Promise<Validated> {
+  const def = RECORDS[type];
+  const h = HANDLERS[type];
+  const before = existing ? { ...h.toValues(existing), _id: existing.id } : undefined;
+  const parsed = def.schema.safeParse(values);
+  if (!parsed.success) {
+    const errors: FieldErrors = {};
+    for (const issue of parsed.error.issues) errors[String(issue.path[0] ?? "_form")] ??= issue.message;
+    return { ok: false, errors };
+  }
+  const data = parsed.data as Data;
+  const errors = { ...def.checks?.(data, { lookup: vc.lookup, now: vc.now, existing: before }) };
+  if (Object.keys(errors).length === 0) Object.assign(errors, await h.serverChecks?.(scopedDb(ctx), data, existing));
+  if (Object.keys(errors).length) return { ok: false, errors };
+  return { ok: true, data, existing, before };
+}
+
+/** Write a validated record inside the caller's transaction, with derived values. Optionally logs its own ActivityEvent. */
+export async function persistRecord(
+  tx: Tx,
+  ctx: WorkspaceContext,
+  type: EntityType,
+  v: Extract<Validated, { ok: true }>,
+  vc: ValidationContext,
+  opts: { logActivity: boolean },
+): Promise<Row> {
+  const def = RECORDS[type];
+  const h = HANDLERS[type];
+  const { data, existing, before } = v;
+  const toWrite = await h.toData(data, { lookup: vc.lookup, now: vc.now, db: tx, existing });
+  const m = model(tx, h.model);
+  const saved = existing
+    ? await m.update({ where: { id: existing.id }, data: toWrite })
+    : await m.create({ data: { ...toWrite, workspaceId: ctx.workspace.id } });
+  await h.after?.(tx, saved, existing, ctx);
+  if (!opts.logActivity) return saved;
+
+  const actor = ctx.user.name ?? ctx.user.email;
+  if (!existing) {
+    await tx.activityEvent.create({
+      data: {
+        workspaceId: ctx.workspace.id, entityType: h.activityType, entityId: saved.id, action: "created",
+        summary: `${actor} added ${def.noun} ${h.display(saved)}`, actorName: actor, createdAt: vc.now,
+      },
+    });
+  } else {
+    const { changed, text } = describeChanges(type, before!, h.toValues(saved), vc.options);
+    if (changed.length) {
+      const statusField = changed.some((f) => ["status", "stage", "hiringStage"].includes(f.name));
+      await tx.activityEvent.create({
+        data: {
+          workspaceId: ctx.workspace.id, entityType: h.activityType, entityId: saved.id,
+          action: statusField ? "status_changed" : "updated",
+          summary: `${actor} updated ${def.noun} ${h.display(saved)}: ${text}`, actorName: actor, createdAt: vc.now,
+        },
+      });
+    }
+  }
+  return saved;
+}
+
+export const isUniqueViolation = (e: unknown) => typeof e === "object" && !!e && "code" in e && e.code === "P2002";
+
 export async function saveRecord(
   ctx: WorkspaceContext,
   type: EntityType,
@@ -324,68 +409,41 @@ export async function saveRecord(
   now = new Date(),
 ): Promise<SaveResult> {
   requireRole(ctx, "EDITOR", "Adding and editing records");
-  const def = RECORDS[type];
   const h = HANDLERS[type];
   const db = scopedDb(ctx);
-
   const existing = id ? await model(db, h.model).findUnique({ where: { id } }) : null;
   if (id && !existing) return { ok: false, errors: { _form: "That record doesn't exist in this workspace." } };
-  const before = existing ? { ...h.toValues(existing), _id: existing.id } : undefined;
 
-  const parsed = def.schema.safeParse(values);
-  if (!parsed.success) {
-    const errors: FieldErrors = {};
-    for (const issue of parsed.error.issues) errors[String(issue.path[0] ?? "_form")] ??= issue.message;
-    return { ok: false, errors };
-  }
-  const data = parsed.data as Data;
-  const options = await getFormOptions(ctx);
-  const lookup = makeLookup(options);
-  const errors = { ...def.checks?.(data, { lookup, now, existing: before }) };
-  if (Object.keys(errors).length === 0) Object.assign(errors, await h.serverChecks?.(db, data, existing));
-  if (Object.keys(errors).length) return { ok: false, errors };
-
-  const toWrite = await h.toData(data, { lookup, now, db, existing });
-  const actor = ctx.user.name ?? ctx.user.email;
+  const vc = await validationContext(ctx, now);
+  const v = await validateRecord(ctx, type, existing, values, vc);
+  if (!v.ok) return v;
   try {
-    const row = await db.$transaction(async (tx) => {
-      const m = model(tx, h.model);
-      const saved = existing
-        ? await m.update({ where: { id: existing.id }, data: toWrite })
-        : await m.create({ data: { ...toWrite, workspaceId: ctx.workspace.id } });
-      await h.after?.(tx, saved, existing, ctx);
-
-      if (!existing) {
-        await tx.activityEvent.create({
-          data: {
-            workspaceId: ctx.workspace.id, entityType: h.activityType, entityId: saved.id, action: "created",
-            summary: `${actor} added ${def.noun} ${h.display(saved)}`, actorName: actor, createdAt: now,
-          },
-        });
-      } else {
-        const { changed, text } = describeChanges(type, before!, h.toValues(saved), options);
-        if (changed.length) {
-          const statusField = changed.some((f) => ["status", "stage", "hiringStage"].includes(f.name));
-          await tx.activityEvent.create({
-            data: {
-              workspaceId: ctx.workspace.id, entityType: h.activityType, entityId: saved.id,
-              action: statusField ? "status_changed" : "updated",
-              summary: `${actor} updated ${def.noun} ${h.display(saved)}: ${text}`, actorName: actor, createdAt: now,
-            },
-          });
-        }
-      }
-      return saved;
-    }, { timeout: 20_000 });
+    const row = await db.$transaction((tx) => persistRecord(tx, ctx, type, v, vc, { logActivity: true }), { timeout: 20_000 });
     return { ok: true, id: row.id, label: h.display(row) };
   } catch (e) {
     // A concurrent save can still hit a unique constraint after our checks passed.
-    if (typeof e === "object" && e && "code" in e && e.code === "P2002") {
+    if (isUniqueViolation(e)) {
       return { ok: false, errors: { _form: "Another record with the same code or email was just saved. Change it and try again." } };
     }
     throw e;
   }
 }
+
+/** Every record of a type as form values (for import matching and diffs). */
+export async function listRecordValues(ctx: WorkspaceContext, type: EntityType): Promise<{ row: Row; values: Values; label: string }[]> {
+  const h = HANDLERS[type];
+  const rows = await model(scopedDb(ctx), h.model).findMany({});
+  return rows.map((row) => ({ row, values: h.toValues(row), label: h.display(row) }));
+}
+
+/** Changed fields between two value sets, labelled and formatted like the activity log. */
+export function fieldChanges(type: EntityType, before: Values, after: Values, o: FormOptions) {
+  return RECORDS[type].fields
+    .filter((f) => (before[f.name] ?? "") !== (after[f.name] ?? ""))
+    .map((f) => ({ field: f.label, from: formatValue(type, f.name, before[f.name] ?? "", o), to: formatValue(type, f.name, after[f.name] ?? "", o) }));
+}
+
+export { HANDLERS as RECORD_HANDLERS, type Row as RecordRow, type Tx as RecordTx };
 
 // ---------- Section tables ----------
 
