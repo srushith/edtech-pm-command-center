@@ -1,0 +1,323 @@
+// EdTech PM Command Center — data model.
+// SQLite locally; kept Postgres-portable (cuid ids, Prisma enums, no raw SQL).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ---------- Enums ----------
+
+enum Region {
+  US
+  INDIA
+  GLOBAL
+}
+
+enum CourseStatus {
+  ACTIVE
+  IN_DEVELOPMENT
+  SUNSET
+}
+
+enum CohortStatus {
+  UPCOMING
+  ACTIVE
+  COMPLETED
+}
+
+enum HealthStatus {
+  HEALTHY
+  ATTENTION
+  CRITICAL
+}
+
+enum HiringStage {
+  SOURCED
+  SCREENING
+  INTERVIEW
+  TRIAL_SESSION
+  OFFER
+  ACTIVE
+  INACTIVE
+}
+
+enum ModuleStage {
+  PLANNED
+  DRAFTING
+  SME_REVIEW
+  QA
+  PUBLISHED
+}
+
+enum SessionStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum Sentiment {
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+}
+
+enum IssueCategory {
+  CONTENT
+  INSTRUCTOR
+  TECHNICAL
+  SCHEDULING
+  PLATFORM
+  LEARNER_SUPPORT
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IssueStatus {
+  OPEN
+  IN_PROGRESS
+  BLOCKED
+  RESOLVED
+}
+
+enum ProjectType {
+  PROJECT
+  CAPSTONE
+}
+
+enum ProjectStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  GRADING
+  COMPLETED
+}
+
+enum LaunchStatus {
+  PLANNING
+  ON_TRACK
+  AT_RISK
+  LAUNCHED
+}
+
+// ---------- Core entities ----------
+
+model Course {
+  id        String       @id @default(cuid())
+  code      String       @unique
+  name      String
+  region    Region
+  track     String
+  status    CourseStatus
+  createdAt DateTime     @default(now())
+
+  cohorts  Cohort[]
+  modules  Module[]
+  launches Launch[]
+  issues   Issue[]
+  projects Project[]
+}
+
+model Cohort {
+  id               String       @id @default(cuid())
+  code             String       @unique
+  name             String
+  courseId         String
+  course           Course       @relation(fields: [courseId], references: [id])
+  startDate        DateTime
+  endDate          DateTime
+  capacity         Int
+  enrolledLearners Int
+  status           CohortStatus
+  health           HealthStatus
+
+  sessions Session[]
+  feedback LearnerFeedback[]
+  issues   Issue[]
+  projects Project[]
+  launches Launch[]
+
+  @@index([courseId])
+}
+
+model Instructor {
+  id          String      @id @default(cuid())
+  name        String
+  email       String      @unique
+  expertise   String // comma-separated tags (SQLite has no scalar lists)
+  region      Region
+  rating      Float? // mean of their completed sessions' avgRating; null if none
+  hiringStage HiringStage
+  joinedAt    DateTime
+
+  sessions Session[]
+}
+
+model SME {
+  id           String      @id @default(cuid())
+  name         String
+  email        String      @unique
+  domain       String
+  company      String
+  hoursPerWeek Int
+  hiringStage  HiringStage
+
+  reviewedModules Module[]
+  guestSessions   Session[]
+}
+
+model Module {
+  id          String      @id @default(cuid())
+  courseId    String
+  course      Course      @relation(fields: [courseId], references: [id])
+  title       String
+  order       Int
+  stage       ModuleStage
+  ownerName   String
+  reviewerId  String?
+  reviewer    SME?        @relation(fields: [reviewerId], references: [id])
+  dueDate     DateTime
+  updatedAt   DateTime
+
+  versions ModuleVersion[]
+  sessions Session[]
+
+  @@unique([courseId, order])
+  @@index([courseId])
+}
+
+model ModuleVersion {
+  id         String   @id @default(cuid())
+  moduleId   String
+  module     Module   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  version    String
+  changelog  String
+  authorName String
+  createdAt  DateTime
+
+  @@unique([moduleId, version])
+}
+
+model Session {
+  id           String        @id @default(cuid())
+  cohortId     String
+  cohort       Cohort        @relation(fields: [cohortId], references: [id])
+  moduleId     String?
+  module       Module?       @relation(fields: [moduleId], references: [id])
+  instructorId String
+  instructor   Instructor    @relation(fields: [instructorId], references: [id])
+  smeId        String?
+  sme          SME?          @relation(fields: [smeId], references: [id])
+  title        String
+  scheduledAt  DateTime
+  durationMin  Int
+  status       SessionStatus
+  attendance   Int? // null until the session has happened
+  avgRating    Float? // derived: mean of feedback ratings, rounded to 2dp
+  recordingUrl String?
+
+  feedback LearnerFeedback[]
+  issues   Issue[]
+
+  @@index([cohortId])
+  @@index([instructorId])
+  @@index([scheduledAt])
+}
+
+model LearnerFeedback {
+  id        String    @id @default(cuid())
+  sessionId String
+  session   Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  cohortId  String
+  cohort    Cohort    @relation(fields: [cohortId], references: [id])
+  learnerId String // pseudonymous learner handle
+  rating    Int // 1–5
+  sentiment Sentiment
+  theme     String // pacing | clarity | examples | audio | engagement | depth | ...
+  comment   String
+  createdAt DateTime
+
+  @@unique([sessionId, learnerId])
+  @@index([cohortId])
+}
+
+model Issue {
+  id         String        @id @default(cuid())
+  code       String        @unique
+  title      String
+  category   IssueCategory
+  severity   Severity
+  status     IssueStatus
+  ownerName  String?
+  courseId   String?
+  course     Course?       @relation(fields: [courseId], references: [id])
+  cohortId   String?
+  cohort     Cohort?       @relation(fields: [cohortId], references: [id])
+  sessionId  String?
+  session    Session?      @relation(fields: [sessionId], references: [id])
+  openedAt   DateTime
+  resolvedAt DateTime?
+
+  @@index([status])
+}
+
+model Project {
+  id          String        @id @default(cuid())
+  title       String
+  type        ProjectType
+  status      ProjectStatus
+  courseId    String
+  course      Course        @relation(fields: [courseId], references: [id])
+  cohortId    String
+  cohort      Cohort        @relation(fields: [cohortId], references: [id])
+  dueDate     DateTime
+  submissions Int
+  avgScore    Float? // 0–100, null until graded
+}
+
+model Launch {
+  id         String       @id @default(cuid())
+  name       String
+  courseId   String
+  course     Course       @relation(fields: [courseId], references: [id])
+  cohortId   String?
+  cohort     Cohort?      @relation(fields: [cohortId], references: [id])
+  targetDate DateTime
+  status     LaunchStatus
+  ownerName  String
+
+  checklist ChecklistItem[]
+}
+
+model ChecklistItem {
+  id        String    @id @default(cuid())
+  launchId  String
+  launch    Launch    @relation(fields: [launchId], references: [id], onDelete: Cascade)
+  label     String
+  ownerName String
+  dueDate   DateTime
+  done      Boolean
+  doneAt    DateTime?
+}
+
+// Append-only log that powers "What changed".
+model ActivityEvent {
+  id         String   @id @default(cuid())
+  entityType String // Course | Cohort | Session | Issue | Module | Launch | Instructor | SME
+  entityId   String
+  action     String // created | updated | status_changed | resolved | rated | ...
+  summary    String
+  actorName  String
+  createdAt  DateTime
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+}
