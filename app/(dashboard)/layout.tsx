@@ -5,11 +5,18 @@ import { AppSidebar } from "@/components/shell/app-sidebar";
 import { CommandPalette } from "@/components/shell/command-palette";
 import { ShellProvider } from "@/components/shell/shell-context";
 import { TopBar } from "@/components/shell/top-bar";
+import { listWorkspaces } from "@/lib/auth/access";
+import { requireUser, requireWorkspace } from "@/lib/auth/session";
 import { getFilterOptions } from "@/lib/data/filters";
 import { getModeCookie } from "@/lib/mode-server";
 
+// Every dashboard page requires a signed-in member of the current workspace
+// (proxy.ts only does an optimistic cookie check).
 export default async function DashboardLayout({ children }: LayoutProps<"/">) {
-  const [filterOptions, mode, cookieStore] = await Promise.all([getFilterOptions(), getModeCookie(), cookies()]);
+  const [user, ctx] = await Promise.all([requireUser(), requireWorkspace()]);
+  const [filterOptions, workspaces, mode, cookieStore] = await Promise.all([
+    getFilterOptions(ctx), listWorkspaces(user.id), getModeCookie(), cookies(),
+  ]);
   const sidebarOpen = cookieStore.get("sidebar_state")?.value !== "false";
 
   return (
@@ -17,7 +24,7 @@ export default async function DashboardLayout({ children }: LayoutProps<"/">) {
       <SidebarProvider defaultOpen={sidebarOpen}>
         {/* The shell reads search params for filters and the ?mode override. */}
         <Suspense>
-          <AppSidebar />
+          <AppSidebar user={user} workspaces={workspaces} currentWorkspaceId={ctx.workspace.id} />
         </Suspense>
         <SidebarInset>
           <Suspense>

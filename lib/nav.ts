@@ -9,6 +9,7 @@ import {
   Library,
   MessageSquareText,
   Rocket,
+  Settings,
   UsersRound,
   Wrench,
   type LucideIcon,
@@ -26,7 +27,8 @@ export type SectionId =
   | "projects"
   | "operations"
   | "ai-insights"
-  | "data";
+  | "data"
+  | "settings";
 
 export type Section = {
   id: SectionId;
@@ -67,10 +69,15 @@ export const SECTIONS: Section[] = [
 // Outside the main nav: sidebar footer and ⌘K only.
 export const DATA_SECTION: Section = {
   id: "data", title: "Data Integrity", href: "/data", icon: Database, phase: "1", shortcut: "d",
-  description: "Record counts and live integrity checks on the seeded dataset.",
+  description: "Record counts and live integrity checks on this workspace's data.",
 };
 
-export const ALL_SECTIONS = [...SECTIONS, DATA_SECTION];
+export const SETTINGS_SECTION: Section = {
+  id: "settings", title: "Settings", href: "/settings", icon: Settings, phase: "1.5", shortcut: "t",
+  description: "Workspace name, members, invites, roles and demo data.",
+};
+
+export const ALL_SECTIONS = [...SECTIONS, DATA_SECTION, SETTINGS_SECTION];
 
 export function sectionById(id: SectionId): Section {
   return ALL_SECTIONS.find((s) => s.id === id)!;

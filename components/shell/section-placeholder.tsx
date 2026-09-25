@@ -1,4 +1,5 @@
 import { StatusBadge } from "@/components/status-badge";
+import { requireWorkspace } from "@/lib/auth/session";
 import { getFocusedEntity } from "@/lib/data/search";
 import { describeDateRange, parseFilters, REGION_LABELS } from "@/lib/filters";
 import { MODE_LABELS } from "@/lib/mode";
@@ -20,7 +21,8 @@ export async function SectionPlaceholder({
   const section = sectionById(id);
   const params = await searchParams;
   const focusParam = Array.isArray(params.focus) ? params.focus[0] : params.focus;
-  const [mode, focused] = await Promise.all([getMode(params), getFocusedEntity(focusParam)]);
+  const ctx = await requireWorkspace();
+  const [mode, focused] = await Promise.all([getMode(params), getFocusedEntity(ctx, focusParam)]);
   const filters = parseFilters(params);
   const Icon = section.icon;
 

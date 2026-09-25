@@ -1,4 +1,5 @@
-import { db } from "@/lib/db";
+import type { WorkspaceContext } from "@/lib/auth/access";
+import { scopedDb } from "@/lib/data/scoped";
 import type { RegionCode } from "@/lib/filters";
 
 export type FilterOptions = {
@@ -6,7 +7,8 @@ export type FilterOptions = {
   cohorts: { code: string; name: string; courseCode: string; region: RegionCode }[];
 };
 
-export async function getFilterOptions(): Promise<FilterOptions> {
+export async function getFilterOptions(ctx: WorkspaceContext): Promise<FilterOptions> {
+  const db = scopedDb(ctx);
   const [courses, cohorts] = await Promise.all([
     db.course.findMany({ select: { code: true, name: true, region: true }, orderBy: { code: "asc" } }),
     db.cohort.findMany({

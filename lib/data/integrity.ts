@@ -1,5 +1,5 @@
-import { connection } from "next/server";
-import { db } from "@/lib/db";
+import type { WorkspaceContext } from "@/lib/auth/access";
+import { scopedDb } from "@/lib/data/scoped";
 import { mean, RESPONSE_RATE_BAND, round2, sentimentForRating } from "@/lib/domain/feedback";
 import { DEMO_TODAY } from "@/lib/domain/time";
 
@@ -8,11 +8,12 @@ import { DEMO_TODAY } from "@/lib/domain/time";
 export type RecordCount = {
   entity: string;
   count: number;
-  target: number | null; // minimum from CLAUDE.md, null when none is specified
+  target: number | null; // demo-data minimum from CLAUDE.md; null when none applies
 };
 
-export async function getRecordCounts(): Promise<RecordCount[]> {
-  await connection();
+/** Counts for the current workspace. Targets apply only while it holds demo data. */
+export async function getRecordCounts(ctx: WorkspaceContext): Promise<RecordCount[]> {
+  const db = scopedDb(ctx);
   const [
     courses, cohorts, instructors, smes, modules, moduleVersions, sessions,
     feedback, issues, projects, launches, checklistItems, activityEvents,
@@ -22,7 +23,8 @@ export async function getRecordCounts(): Promise<RecordCount[]> {
     db.learnerFeedback.count(), db.issue.count(), db.project.count(),
     db.launch.count(), db.checklistItem.count(), db.activityEvent.count(),
   ]);
-  return [
+  const hasDemo = (await db.course.count({ where: { isDemo: true } })) > 0;
+  const rows: RecordCount[] = [
     { entity: "Course", count: courses, target: 8 },
     { entity: "Cohort", count: cohorts, target: 10 },
     { entity: "Instructor", count: instructors, target: 20 },
@@ -37,6 +39,7 @@ export async function getRecordCounts(): Promise<RecordCount[]> {
     { entity: "ChecklistItem", count: checklistItems, target: null },
     { entity: "ActivityEvent", count: activityEvents, target: null },
   ];
+  return hasDemo ? rows : rows.map((r) => ({ ...r, target: null }));
 }
 
 // ---------- Integrity checks ----------
@@ -69,17 +72,17 @@ function check(
 
 const fmtDate = (d: Date) => d.toISOString().slice(0, 16).replace("T", " ");
 
-export async function runIntegrityChecks(): Promise<IntegrityCheck[]> {
-  await connection();
+export async function runIntegrityChecks(ctx: WorkspaceContext): Promise<IntegrityCheck[]> {
+  const db = scopedDb(ctx);
   // The dataset is small; load once and check in memory so every rule is explicit.
-  const [cohorts, sessions, feedback, instructors, projects] = await Promise.all([
+  const [cohorts, sessions, feedback, instructors, projects, links] = await Promise.all([
     db.cohort.findMany({
       select: { id: true, code: true, capacity: true, enrolledLearners: true, startDate: true, endDate: true },
     }),
     db.session.findMany({
       select: {
         id: true, cohortId: true, instructorId: true, status: true,
-        scheduledAt: true, attendance: true, avgRating: true,
+        scheduledAt: true, attendance: true, avgRating: true, moduleId: true, smeId: true,
       },
     }),
     db.learnerFeedback.findMany({
@@ -90,6 +93,7 @@ export async function runIntegrityChecks(): Promise<IntegrityCheck[]> {
     }),
     db.instructor.findMany({ select: { id: true, name: true, rating: true } }),
     db.project.findMany({ select: { id: true, cohortId: true, submissions: true } }),
+    optionalLinkTargets(db),
   ]);
 
   const cohortById = new Map(cohorts.map((c) => [c.id, c]));
@@ -215,6 +219,24 @@ export async function runIntegrityChecks(): Promise<IntegrityCheck[]> {
       headcount.push({ recordId: p.id, detail: `${p.submissions} submissions > ${c.enrolledLearners} learners` });
   }
 
+  // 9. Optional links stay inside the workspace (required ones are enforced by foreign keys)
+  const crossWorkspace: Violation[] = [];
+  const linkCheck = (recordId: string, label: string, id: string | null, targets: Set<string>) => {
+    if (id != null && !targets.has(id)) crossWorkspace.push({ recordId, detail: `${label} ${id} is not in this workspace` });
+  };
+  for (const s of sessions) {
+    linkCheck(s.id, "Module", s.moduleId, links.modules);
+    linkCheck(s.id, "Guest SME", s.smeId, links.smes);
+  }
+  for (const m of links.moduleReviewers) linkCheck(m.id, "Reviewer", m.reviewerId, links.smes);
+  for (const i of links.issueLinks) {
+    linkCheck(i.id, "Course", i.courseId, links.courses);
+    linkCheck(i.id, "Cohort", i.cohortId, new Set(cohorts.map((c) => c.id)));
+    linkCheck(i.id, "Session", i.sessionId, new Set(sessions.map((s) => s.id)));
+  }
+  for (const l of links.launchCohorts) linkCheck(l.id, "Cohort", l.cohortId, new Set(cohorts.map((c) => c.id)));
+  const linkCount = sessions.length + links.moduleReviewers.length + links.issueLinks.length + links.launchCohorts.length;
+
   return [
     check("attendance", "Attendance ≤ enrolled learners", "Every completed session's attendance is between 0 and its cohort's enrolled learners.", held.length, "completed sessions", attendance),
     check("feedback-per-session", "Feedback count fits attendance", `Feedback rows per session ≤ attendance, response rate ${RESPONSE_RATE_BAND.min * 100}–${RESPONSE_RATE_BAND.max * 100}%.`, held.length, "completed sessions", perSession),
@@ -224,5 +246,20 @@ export async function runIntegrityChecks(): Promise<IntegrityCheck[]> {
     check("session-timing", "Sessions inside cohort window", "Sessions fall between cohort start and end; past ones aren't SCHEDULED, future ones are.", sessions.length, "sessions", timing),
     check("outcomes", "No outcomes before a session happens", "Only completed sessions have attendance, ratings or feedback; feedback is submitted after the session.", sessions.length + feedback.length, "sessions + feedback", outcomes),
     check("headcount", "Headcount within capacity", `Enrolled ≤ capacity < ${MAX_LEARNERS}; project submissions ≤ enrolled.`, cohorts.length + projects.length, "cohorts + projects", headcount),
+    check("workspace-links", "Links stay inside the workspace", "Optional links (session module/SME, module reviewer, issue course/cohort/session, launch cohort) point at records in this workspace.", linkCount, "records with optional links", crossWorkspace),
   ];
+}
+
+// Ids in this workspace, plus every optional link, for check 9.
+async function optionalLinkTargets(db: ReturnType<typeof scopedDb>) {
+  const [modules, smes, courses, moduleReviewers, issueLinks, launchCohorts] = await Promise.all([
+    db.module.findMany({ select: { id: true } }),
+    db.sME.findMany({ select: { id: true } }),
+    db.course.findMany({ select: { id: true } }),
+    db.module.findMany({ select: { id: true, reviewerId: true } }),
+    db.issue.findMany({ select: { id: true, courseId: true, cohortId: true, sessionId: true } }),
+    db.launch.findMany({ select: { id: true, cohortId: true } }),
+  ]);
+  const ids = (rows: { id: string }[]) => new Set(rows.map((r) => r.id));
+  return { modules: ids(modules), smes: ids(smes), courses: ids(courses), moduleReviewers, issueLinks, launchCohorts };
 }

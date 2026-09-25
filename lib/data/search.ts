@@ -1,4 +1,5 @@
-import { db } from "@/lib/db";
+import type { WorkspaceContext } from "@/lib/auth/access";
+import { scopedDb } from "@/lib/data/scoped";
 import { sectionById, type SectionId } from "@/lib/nav";
 import { ENTITY_LABELS, type EntityType, type SearchItem } from "@/lib/search-types";
 
@@ -42,12 +43,13 @@ function item(
 }
 
 /**
- * Every searchable entity, flattened for the ⌘K palette. The dataset is a few
+ * Every searchable entity in the current workspace, flattened for the ⌘K palette. The dataset is a few
  * hundred rows, so the palette loads it once and matches client-side with
  * lib/search.ts (portable across SQLite/Postgres, no case-sensitivity differences).
  * `fields` holds the searchable text that isn't in the label or sublabel.
  */
-export async function getSearchIndex(): Promise<SearchItem[]> {
+export async function getSearchIndex(ctx: WorkspaceContext): Promise<SearchItem[]> {
+  const db = scopedDb(ctx);
   const [courses, cohorts, instructors, smes, modules, sessions, issues, projects, launches, feedback] =
     await Promise.all([
       db.course.findMany({
@@ -126,10 +128,10 @@ export async function getSearchIndex(): Promise<SearchItem[]> {
 }
 
 /** Resolve a `focus=<type>:<id>` param to a display item, or null if it doesn't exist. */
-export async function getFocusedEntity(focus: string | undefined): Promise<SearchItem | null> {
+export async function getFocusedEntity(ctx: WorkspaceContext, focus: string | undefined): Promise<SearchItem | null> {
   if (!focus) return null;
   const [type, id] = focus.split(":");
   if (!type || !id || !(type in ENTITY_LABELS)) return null;
-  const index = await getSearchIndex();
+  const index = await getSearchIndex(ctx);
   return index.find((i) => i.type === type && i.id === id) ?? null;
 }

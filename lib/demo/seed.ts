@@ -1,7 +1,9 @@
-// Deterministic, internally consistent mock data for the Command Center.
+// Deterministic, internally consistent demo data for one workspace
+// ("Start with demo data" in onboarding; also used by tests).
 //
 // Determinism: a seeded PRNG (mulberry32) and a fixed anchor date stand in for
-// Math.random() and Date.now(); ids are derived, not generated. Same input, same rows.
+// Math.random() and Date.now(); ids are derived, not generated. Every workspace gets
+// the same rows, with ids prefixed by the workspace id so they stay globally unique.
 //
 // Consistency is by construction. Integrity checks on /data verify it:
 //   attendance <= enrolled learners <= capacity < 100
@@ -10,9 +12,6 @@
 //   Session.avgRating and Instructor.rating are computed from feedback, never drawn
 //   past sessions have attendance, future ones don't
 
-import "dotenv/config";
-import { PrismaLibSql } from "@prisma/adapter-libsql";
-import { PrismaClient } from "../lib/generated/prisma/client";
 import type {
   CohortStatus,
   HealthStatus,
@@ -23,10 +22,10 @@ import type {
   Prisma,
   Region,
   SessionStatus,
-} from "../lib/generated/prisma/client";
-import { mean, round2, sentimentForRating } from "../lib/domain/feedback";
-import { DEMO_TODAY } from "../lib/domain/time";
-import * as F from "./seed-data";
+} from "@/lib/generated/prisma/client";
+import { mean, round2, sentimentForRating } from "@/lib/domain/feedback";
+import { DEMO_TODAY } from "@/lib/domain/time";
+import * as F from "./fixtures";
 
 const ANCHOR = DEMO_TODAY;
 const DAY = 86_400_000;
@@ -49,23 +48,30 @@ function mulberry32(seed: number) {
   };
 }
 
-const rand = mulberry32(20260925);
-const between = (min: number, max: number) => min + rand() * (max - min);
-const int = (min: number, max: number) => Math.floor(between(min, max + 1));
-const pick = <T>(arr: readonly T[]): T => arr[Math.floor(rand() * arr.length)];
-const chance = (p: number) => rand() < p;
-function shuffle<T>(arr: readonly T[]): T[] {
-  const out = [...arr];
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out;
-}
-function normal() {
-  const u = 1 - rand();
-  const v = rand();
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+// A fresh stream per call, so every workspace's demo data is identical.
+function makeRandom(seed: number) {
+  const rand = mulberry32(seed);
+  const between = (min: number, max: number) => min + rand() * (max - min);
+  return {
+    rand,
+    between,
+    int: (min: number, max: number) => Math.floor(between(min, max + 1)),
+    pick: <T>(arr: readonly T[]): T => arr[Math.floor(rand() * arr.length)],
+    chance: (p: number) => rand() < p,
+    shuffle<T>(arr: readonly T[]): T[] {
+      const out = [...arr];
+      for (let i = out.length - 1; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1));
+        [out[i], out[j]] = [out[j], out[i]];
+      }
+      return out;
+    },
+    normal() {
+      const u = 1 - rand();
+      const v = rand();
+      return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    },
+  };
 }
 const slug = (s: string) =>
   s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, ".");
@@ -99,10 +105,15 @@ const CHANGELOGS = [
   "Split long lecture into two shorter segments",
 ];
 
-async function main() {
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error("DATABASE_URL is not set");
-  const db = new PrismaClient({ adapter: new PrismaLibSql({ url }) });
+type Tx = Prisma.TransactionClient;
+// Rows are built without tenancy fields; scope() adds them at write time.
+type Row<T> = Omit<T, "workspaceId">;
+
+export type DemoCounts = Record<string, number>;
+
+/** Insert the demo dataset into `workspaceId`. Call inside a transaction. */
+export async function seedDemoData(tx: Tx, workspaceId: string): Promise<DemoCounts> {
+  const { between, int, pick, chance, shuffle, normal } = makeRandom(20260925);
 
   // ---------- People ----------
   const namePairs = shuffle(F.FIRST_NAMES.flatMap((f) => F.LAST_NAMES.map((l) => `${f} ${l}`)));
@@ -198,8 +209,8 @@ async function main() {
   });
 
   // ---------- Modules & versions ----------
-  const modules: Prisma.ModuleCreateManyInput[] = [];
-  const versions: Prisma.ModuleVersionCreateManyInput[] = [];
+  const modules: Row<Prisma.ModuleCreateManyInput>[] = [];
+  const versions: Row<Prisma.ModuleVersionCreateManyInput>[] = [];
   const publishedByCourse = new Map<string, { id: string; title: string; tags: string[] }[]>();
   const contentOwners = ["Content: Mei", "Content: Arun", "Srushith"];
 
@@ -210,7 +221,7 @@ async function main() {
     const labels = published ? ["v1.0", "v1.1", "v1.2", "v2.0"] : ["v0.1"];
     // Walk backwards from the newest version so every date is in the past.
     let at = addDays(ANCHOR, -int(1, 40));
-    const vs: Prisma.ModuleVersionCreateManyInput[] = [];
+    const vs: Row<Prisma.ModuleVersionCreateManyInput>[] = [];
     for (let v = versionCount - 1; v >= 0; v--) {
       vs.unshift({
         id: `${id}_v${v}`,
@@ -257,9 +268,9 @@ async function main() {
   }
 
   // ---------- Sessions & feedback ----------
-  type SessionRow = Prisma.SessionCreateManyInput & { key: string; feedbackCount: number };
+  type SessionRow = Row<Prisma.SessionCreateManyInput> & { key: string; feedbackCount: number };
   const sessions: SessionRow[] = [];
-  const feedback: Prisma.LearnerFeedbackCreateManyInput[] = [];
+  const feedback: Row<Prisma.LearnerFeedbackCreateManyInput>[] = [];
   // Each cohort gets a lead and a second instructor, round-robin over active instructors.
   const instructorPool = shuffle(activeInstructors);
   const teaching = cohorts.map((_, i) => ({
@@ -385,7 +396,7 @@ async function main() {
     "API credits exhausted for lab accounts": { cohort: "AIE-C1", status: "BLOCKED" },
   };
 
-  const issues: Prisma.IssueCreateManyInput[] = F.ISSUE_TEMPLATES.map((t, i) => {
+  const issues: Row<Prisma.IssueCreateManyInput>[] = F.ISSUE_TEMPLATES.map((t, i) => {
     const pin = pinned[t.title];
     const cohort = pin ? cohortByCode.get(pin.cohort)! : runningCohorts[i % runningCohorts.length];
     const session = pin?.sessionKey ? sessionByKey.get(pin.sessionKey)! : null;
@@ -429,7 +440,7 @@ async function main() {
   });
 
   // ---------- Projects ----------
-  const projects: Prisma.ProjectCreateManyInput[] = [];
+  const projects: Row<Prisma.ProjectCreateManyInput>[] = [];
   for (const cohort of runningCohorts) {
     const kinds: ("PROJECT" | "CAPSTONE")[] = cohort.weeks >= 10 ? ["PROJECT", "CAPSTONE"] : ["PROJECT"];
     for (const type of kinds) {
@@ -438,7 +449,7 @@ async function main() {
           ? addDays(cohort.startDate, Math.floor(cohort.weeks * 3.5))
           : addDays(cohort.endDate, -3);
       const opensAt = addDays(dueDate, -21);
-      let status: Prisma.ProjectCreateManyInput["status"];
+      let status: Row<Prisma.ProjectCreateManyInput>["status"];
       let submissions = 0;
       let avgScore: number | null = null;
       if (dueDate <= ANCHOR) {
@@ -480,8 +491,8 @@ async function main() {
   // Overdue, not-done items that make the FDE launch at risk.
   const AT_RISK_BLOCKERS = new Set(["Instructors contracted", "Curriculum modules published"]);
 
-  const launches: Prisma.LaunchCreateManyInput[] = [];
-  const checklist: Prisma.ChecklistItemCreateManyInput[] = [];
+  const launches: Row<Prisma.LaunchCreateManyInput>[] = [];
+  const checklist: Row<Prisma.ChecklistItemCreateManyInput>[] = [];
   launchDefs.forEach((l, i) => {
     const cohort = l.cohort ? cohortByCode.get(l.cohort)! : null;
     const targetDate = cohort ? cohort.startDate : addDays(ANCHOR, l.offset!);
@@ -513,7 +524,7 @@ async function main() {
   });
 
   // ---------- Activity log ("What changed") ----------
-  type Event = Omit<Prisma.ActivityEventCreateManyInput, "id" | "createdAt"> & { createdAt: Date };
+  type Event = Omit<Row<Prisma.ActivityEventCreateManyInput>, "id" | "createdAt"> & { createdAt: Date };
   const events: Event[] = [];
   const recent = (d: Date | null | undefined, days: number) =>
     !!d && d <= ANCHOR && d >= addDays(ANCHOR, -days);
@@ -553,39 +564,33 @@ async function main() {
   const activity = events.map((e, i) => ({ ...e, id: `evt_${String(i + 1).padStart(3, "0")}` }));
 
   // ---------- Write ----------
-  // Children first so foreign keys never dangle mid-reset.
-  await db.activityEvent.deleteMany();
-  await db.checklistItem.deleteMany();
-  await db.launch.deleteMany();
-  await db.project.deleteMany();
-  await db.issue.deleteMany();
-  await db.learnerFeedback.deleteMany();
-  await db.session.deleteMany();
-  await db.moduleVersion.deleteMany();
-  await db.module.deleteMany();
-  await db.cohort.deleteMany();
-  await db.course.deleteMany();
-  await db.sME.deleteMany();
-  await db.instructor.deleteMany();
+  // Prefix every id and foreign key with the workspace id, and stamp workspaceId/isDemo.
+  const ID_KEYS = /^(id|entityId|[a-z]+Id)$/;
+  const scope = <T extends object>(rows: T[]) =>
+    rows.map((row) => {
+      const out: Record<string, unknown> = { workspaceId, isDemo: true };
+      for (const [k, v] of Object.entries(row)) {
+        out[k] = typeof v === "string" && ID_KEYS.test(k) && k !== "learnerId" ? `${workspaceId}_${v}` : v;
+      }
+      return out as T & { workspaceId: string; isDemo: boolean };
+    });
 
-  await db.instructor.createMany({ data: instructors });
-  await db.sME.createMany({ data: smes });
-  await db.course.createMany({ data: courses });
-  await db.cohort.createMany({
-    data: cohorts.map(({ weeks: _w, courseCode: _c, region: _r, ...c }) => c),
-  });
-  await db.module.createMany({ data: modules });
-  await db.moduleVersion.createMany({ data: versions });
-  await db.session.createMany({ data: sessions.map(({ key: _k, feedbackCount: _f, ...s }) => s) });
-  await db.learnerFeedback.createMany({ data: feedback });
-  await db.issue.createMany({ data: issues });
-  await db.project.createMany({ data: projects });
-  await db.launch.createMany({ data: launches });
-  await db.checklistItem.createMany({ data: checklist });
-  await db.activityEvent.createMany({ data: activity });
+  // Parents before children.
+  await tx.instructor.createMany({ data: scope(instructors) });
+  await tx.sME.createMany({ data: scope(smes) });
+  await tx.course.createMany({ data: scope(courses) });
+  await tx.cohort.createMany({ data: scope(cohorts.map(({ weeks: _w, courseCode: _c, region: _r, ...c }) => c)) });
+  await tx.module.createMany({ data: scope(modules) });
+  await tx.moduleVersion.createMany({ data: scope(versions) });
+  await tx.session.createMany({ data: scope(sessions.map(({ key: _k, feedbackCount: _f, ...s }) => s)) });
+  await tx.learnerFeedback.createMany({ data: scope(feedback) });
+  await tx.issue.createMany({ data: scope(issues) });
+  await tx.project.createMany({ data: scope(projects) });
+  await tx.launch.createMany({ data: scope(launches) });
+  await tx.checklistItem.createMany({ data: scope(checklist) });
+  await tx.activityEvent.createMany({ data: scope(activity) });
 
-  console.log("Seeded (anchor %s):", ANCHOR.toISOString().slice(0, 10));
-  console.table({
+  return {
     courses: courses.length,
     cohorts: cohorts.length,
     instructors: instructors.length,
@@ -599,11 +604,5 @@ async function main() {
     launches: launches.length,
     checklistItems: checklist.length,
     activityEvents: activity.length,
-  });
-  await db.$disconnect();
+  };
 }
-
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});

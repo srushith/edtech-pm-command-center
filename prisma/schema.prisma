@@ -1,5 +1,10 @@
-// EdTech PM Command Center — data model.
-// SQLite locally; kept Postgres-portable (cuid ids, Prisma enums, no raw SQL).
+// EdTech PM Command Center — data model (PostgreSQL).
+//
+// Multi-tenant: every domain row belongs to a Workspace. Required parent links
+// include workspaceId in the foreign key ([parentId, workspaceId] -> [id, workspaceId]),
+// so the database rejects a child that points into another workspace. Optional
+// links can't (Prisma requires all-or-nothing optionality); lib/data enforces those
+// and /data checks them. isDemo marks rows created by "Start with demo data".
 
 generator client {
   provider = "prisma-client"
@@ -7,7 +12,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 // ---------- Enums ----------
@@ -108,11 +113,105 @@ enum LaunchStatus {
   LAUNCHED
 }
 
+// ---------- Accounts & workspaces ----------
+
+enum Role {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+// Auth.js (JWT sessions, so no auth Session table; that name is the class session below).
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+
+  accounts    Account[]
+  memberships Membership[]
+  invitesSent Invite[]
+}
+
+model Account {
+  userId            String
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  @@id([provider, providerAccountId])
+}
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  memberships    Membership[]
+  invites        Invite[]
+  courses        Course[]
+  cohorts        Cohort[]
+  instructors    Instructor[]
+  smes           SME[]
+  modules        Module[]
+  moduleVersions ModuleVersion[]
+  sessions       Session[]
+  feedback       LearnerFeedback[]
+  issues         Issue[]
+  projects       Project[]
+  launches       Launch[]
+  checklistItems ChecklistItem[]
+  activity       ActivityEvent[]
+}
+
+model Membership {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  role        Role
+  createdAt   DateTime  @default(now())
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
+}
+
+// Pending until the invitee signs in with Google as this email (stored lowercase).
+model Invite {
+  id          String    @id @default(cuid())
+  email       String
+  role        Role
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedById String
+  invitedBy   User      @relation(fields: [invitedById], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+
+  @@unique([workspaceId, email])
+  @@index([email])
+}
+
 // ---------- Core entities ----------
 
 model Course {
   id          String       @id @default(cuid())
-  code        String       @unique
+  workspaceId String
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo      Boolean      @default(false)
+  code        String
   name        String
   region      Region
   track       String
@@ -125,14 +224,21 @@ model Course {
   launches Launch[]
   issues   Issue[]
   projects Project[]
+
+  @@unique([id, workspaceId])
+  @@unique([workspaceId, code])
+  @@index([workspaceId])
 }
 
 model Cohort {
   id               String       @id @default(cuid())
-  code             String       @unique
+  workspaceId      String
+  workspace        Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo           Boolean      @default(false)
+  code             String
   name             String
   courseId         String
-  course           Course       @relation(fields: [courseId], references: [id])
+  course           Course       @relation(fields: [courseId, workspaceId], references: [id, workspaceId])
   startDate        DateTime
   endDate          DateTime
   capacity         Int
@@ -146,26 +252,39 @@ model Cohort {
   projects Project[]
   launches Launch[]
 
+  @@unique([id, workspaceId])
+  @@unique([workspaceId, code])
   @@index([courseId])
+  @@index([workspaceId])
 }
 
 model Instructor {
   id          String      @id @default(cuid())
+  workspaceId String
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo      Boolean     @default(false)
   name        String
-  email       String      @unique
-  expertise   String // comma-separated tags (SQLite has no scalar lists)
+  email       String
+  expertise   String // comma-separated tags
   region      Region
   rating      Float? // mean of their completed sessions' avgRating; null if none
   hiringStage HiringStage
   joinedAt    DateTime
 
   sessions Session[]
+
+  @@unique([id, workspaceId])
+  @@unique([workspaceId, email])
+  @@index([workspaceId])
 }
 
 model SME {
   id           String      @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo       Boolean     @default(false)
   name         String
-  email        String      @unique
+  email        String
   domain       String
   company      String
   hoursPerWeek Int
@@ -173,12 +292,19 @@ model SME {
 
   reviewedModules Module[]
   guestSessions   Session[]
+
+  @@unique([id, workspaceId])
+  @@unique([workspaceId, email])
+  @@index([workspaceId])
 }
 
 model Module {
   id          String      @id @default(cuid())
+  workspaceId String
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo      Boolean     @default(false)
   courseId    String
-  course      Course      @relation(fields: [courseId], references: [id])
+  course      Course      @relation(fields: [courseId, workspaceId], references: [id, workspaceId])
   title       String
   description String
   tags        String // comma-separated, like Instructor.expertise
@@ -194,29 +320,39 @@ model Module {
   sessions Session[]
 
   @@unique([courseId, order])
+  @@unique([id, workspaceId])
   @@index([courseId])
+  @@index([workspaceId])
 }
 
 model ModuleVersion {
-  id         String   @id @default(cuid())
-  moduleId   String
-  module     Module   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
-  version    String
-  changelog  String
-  authorName String
-  createdAt  DateTime
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo      Boolean   @default(false)
+  moduleId    String
+  module      Module    @relation(fields: [moduleId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
+  version     String
+  changelog   String
+  authorName  String
+  createdAt   DateTime
 
   @@unique([moduleId, version])
+  @@unique([id, workspaceId])
+  @@index([workspaceId])
 }
 
 model Session {
   id           String        @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo       Boolean       @default(false)
   cohortId     String
-  cohort       Cohort        @relation(fields: [cohortId], references: [id])
+  cohort       Cohort        @relation(fields: [cohortId, workspaceId], references: [id, workspaceId])
   moduleId     String?
   module       Module?       @relation(fields: [moduleId], references: [id])
   instructorId String
-  instructor   Instructor    @relation(fields: [instructorId], references: [id])
+  instructor   Instructor    @relation(fields: [instructorId, workspaceId], references: [id, workspaceId])
   smeId        String?
   sme          SME?          @relation(fields: [smeId], references: [id])
   title        String
@@ -230,31 +366,41 @@ model Session {
   feedback LearnerFeedback[]
   issues   Issue[]
 
+  @@unique([id, workspaceId])
   @@index([cohortId])
   @@index([instructorId])
   @@index([scheduledAt])
+  @@index([workspaceId])
 }
 
 model LearnerFeedback {
-  id        String    @id @default(cuid())
-  sessionId String
-  session   Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  cohortId  String
-  cohort    Cohort    @relation(fields: [cohortId], references: [id])
-  learnerId String // pseudonymous learner handle
-  rating    Int // 1–5
-  sentiment Sentiment
-  theme     String // pacing | clarity | examples | audio | engagement | depth | ...
-  comment   String
-  createdAt DateTime
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo      Boolean   @default(false)
+  sessionId   String
+  session     Session   @relation(fields: [sessionId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
+  cohortId    String
+  cohort      Cohort    @relation(fields: [cohortId, workspaceId], references: [id, workspaceId])
+  learnerId   String // pseudonymous learner handle
+  rating      Int // 1–5
+  sentiment   Sentiment
+  theme       String // pacing | clarity | examples | audio | engagement | depth | ...
+  comment     String
+  createdAt   DateTime
 
   @@unique([sessionId, learnerId])
+  @@unique([id, workspaceId])
   @@index([cohortId])
+  @@index([workspaceId])
 }
 
 model Issue {
   id          String        @id @default(cuid())
-  code        String        @unique
+  workspaceId String
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo      Boolean       @default(false)
+  code        String
   title       String
   description String
   category    IssueCategory
@@ -270,59 +416,85 @@ model Issue {
   openedAt    DateTime
   resolvedAt  DateTime?
 
+  @@unique([id, workspaceId])
+  @@unique([workspaceId, code])
   @@index([status])
+  @@index([workspaceId])
 }
 
 model Project {
   id          String        @id @default(cuid())
+  workspaceId String
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo      Boolean       @default(false)
   title       String
   description String
   type        ProjectType
   status      ProjectStatus
   courseId    String
-  course      Course        @relation(fields: [courseId], references: [id])
+  course      Course        @relation(fields: [courseId, workspaceId], references: [id, workspaceId])
   cohortId    String
-  cohort      Cohort        @relation(fields: [cohortId], references: [id])
+  cohort      Cohort        @relation(fields: [cohortId, workspaceId], references: [id, workspaceId])
   dueDate     DateTime
   submissions Int
   avgScore    Float? // 0–100, null until graded
+
+  @@unique([id, workspaceId])
+  @@index([workspaceId])
 }
 
 model Launch {
-  id         String       @id @default(cuid())
-  name       String
-  courseId   String
-  course     Course       @relation(fields: [courseId], references: [id])
-  cohortId   String?
-  cohort     Cohort?      @relation(fields: [cohortId], references: [id])
-  targetDate DateTime
-  status     LaunchStatus
-  ownerName  String
+  id          String       @id @default(cuid())
+  workspaceId String
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo      Boolean      @default(false)
+  name        String
+  courseId    String
+  course      Course       @relation(fields: [courseId, workspaceId], references: [id, workspaceId])
+  cohortId    String?
+  cohort      Cohort?      @relation(fields: [cohortId], references: [id])
+  targetDate  DateTime
+  status      LaunchStatus
+  ownerName   String
 
   checklist ChecklistItem[]
+
+  @@unique([id, workspaceId])
+  @@index([workspaceId])
 }
 
 model ChecklistItem {
-  id        String    @id @default(cuid())
-  launchId  String
-  launch    Launch    @relation(fields: [launchId], references: [id], onDelete: Cascade)
-  label     String
-  ownerName String
-  dueDate   DateTime
-  done      Boolean
-  doneAt    DateTime?
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo      Boolean   @default(false)
+  launchId    String
+  launch      Launch    @relation(fields: [launchId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
+  label       String
+  ownerName   String
+  dueDate     DateTime
+  done        Boolean
+  doneAt      DateTime?
+
+  @@unique([id, workspaceId])
+  @@index([workspaceId])
 }
 
 // Append-only log that powers "What changed".
 model ActivityEvent {
-  id         String   @id @default(cuid())
-  entityType String // Course | Cohort | Session | Issue | Module | Launch | Instructor | SME
-  entityId   String
-  action     String // created | updated | status_changed | resolved | rated | ...
-  summary    String
-  actorName  String
-  createdAt  DateTime
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo      Boolean   @default(false)
+  entityType  String // Course | Cohort | Session | Issue | Module | Launch | Instructor | SME
+  entityId    String
+  action      String // created | updated | status_changed | resolved | rated | ...
+  summary     String
+  actorName   String
+  createdAt   DateTime
 
+  @@unique([id, workspaceId])
   @@index([createdAt])
   @@index([entityType, entityId])
+  @@index([workspaceId])
 }

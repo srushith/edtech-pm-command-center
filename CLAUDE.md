@@ -1,7 +1,8 @@
 # EdTech PM Command Center
 
-An internal operating system for an EdTech Product/Curriculum Manager running many
-courses, cohorts, instructors, SMEs and learner experiences. Demo user: Srushith.
+An internal operating system for EdTech Product/Curriculum Managers running many
+courses, cohorts, instructors, SMEs and learner experiences. Multiple PMs use it, each
+in their own workspace(s) of courses; teammates join by invite with a role.
 This is an operational PM tool, NOT a BI dashboard. Optimize for decision speed:
 the PM should know what is healthy, broken, changed, at risk, and what to do next
 within 30 seconds.
@@ -17,8 +18,9 @@ Every signal follows: Metric -> Signal -> Evidence -> Root Cause -> Action.
 ## Stack (all free / open source)
 - Next.js (App Router) + TypeScript + Tailwind CSS + shadcn/ui
 - Recharts for charts, lucide-react for icons, cmdk (shadcn Command) for the palette
-- Prisma ORM with SQLite locally (switch to Postgres on deploy)
-- No paid services. AI is mocked behind `lib/ai/provider.ts` with a single
+- Prisma ORM with PostgreSQL (Neon free tier), schema changes via `prisma migrate`
+- Auth.js (next-auth v5) with Google sign-in, JWT sessions, Prisma adapter
+- No paid services (no email sending: invites are pending records). AI is mocked behind `lib/ai/provider.ts` with a single
   interface so a real provider can be plugged in later.
 
 ## Design rules
@@ -29,11 +31,15 @@ Every signal follows: Metric -> Signal -> Evidence -> Root Cause -> Action.
 - Home hierarchy: attention -> what changed -> risk -> what's next -> portfolio -> analytics.
 
 ## Data model (see prisma/schema.prisma)
-Course, Cohort, Instructor, SME, Module, Session, LearnerFeedback, Issue, Project,
+Accounts: User, Account (Auth.js), Workspace, Membership (OWNER | EDITOR | VIEWER), Invite.
+Domain: Course, Cohort, Instructor, SME, Module, Session, LearnerFeedback, Issue, Project,
 Launch, plus ModuleVersion, ChecklistItem, ActivityEvent (for "What changed").
-Mock data volumes: 10 cohorts across 8 courses, 20+ instructors, 30+ SMEs,
-50+ sessions, 100+ feedback records, 20+ issues, 10+ modules, 5+ launches.
-Seed must be deterministic and internally consistent (attendance <= learners,
+Every domain model has `workspaceId` and `isDemo`. Required parent links are composite
+foreign keys `[parentId, workspaceId]`, so the database rejects cross-workspace children;
+optional links are checked in lib/data and by /data's "Links stay inside the workspace".
+Demo data ("Start with demo data", `lib/demo/seed.ts`): 10 cohorts across 8 courses,
+20+ instructors, 30+ SMEs, 50+ sessions, 100+ feedback records, 20+ issues, 10+ modules,
+5+ launches. It must be deterministic and internally consistent (attendance <= learners,
 feedback counts plausible for cohort size, ratings match feedback sentiment).
 Courses: Agentic AI (US), Transformative GenAI (India), AI Engineering, PM, TPM, EM, SWE, FDE.
 
@@ -50,20 +56,45 @@ Courses: Agentic AI (US), Transformative GenAI (India), AI Engineering, PM, TPM,
 10. Operations `/operations`
 11. AI Insights `/ai-insights`
 
-Data Integrity (`/data`) is not in the main nav. It lives in the sidebar footer and in ⌘K.
-`lib/nav.ts` is the single source for this list.
+Data Integrity (`/data`) and Settings (`/settings`) are not in the main nav. They live in
+the sidebar footer and in ⌘K. The sidebar header is the workspace switcher.
+`lib/nav.ts` is the single source for these lists. Outside the dashboard: `/signin`, `/onboarding`.
 
 ## Conventions
 - Feature folders under `app/(dashboard)/<section>`; shared UI in `components/`.
 - Data access only through `lib/data/*` functions, never directly in components.
+- Workspaces and roles (non-negotiable):
+  - Every page and server action gets its context from `requireWorkspace()` (`lib/auth/session.ts`);
+    `proxy.ts` is only an optimistic cookie check, never the security boundary.
+  - Every `lib/data` function takes a `WorkspaceContext` and reads/writes domain models only
+    through `scopedDb(ctx)` (`lib/data/scoped.ts`): it filters by workspace, stamps creates, and
+    blocks writes for viewers. Use flat inputs (no nested writes); no raw SQL on domain data.
+  - Workspace/member/invite functions live in `lib/data/workspaces.ts` and check roles explicitly
+    (`requireRole`). Owner: settings, members, invites, clear demo data. Editor: edit records.
+    Viewer: read only. A workspace always keeps at least one owner.
+  - Sign-in is invite-only: `ALLOWED_EMAILS` admins, existing members, or a pending invite.
+  - The current workspace is the `cc-workspace` cookie, validated against memberships.
+    Switching workspaces drops URL filters (codes belong to a workspace).
+  - Any new data function needs a test in `tests/tenancy.test.ts` proving another workspace's
+    member can't read or change its records.
+- Secrets only in `.env.local` (gitignored via `.env*`); `.env.example` lists every key, no values.
+- Schema changes: edit `prisma/schema.prisma`, then `npm run db:migrate` and commit the migration.
+- Tests: `npm test` runs against `DATABASE_URL_TEST` only (it wipes that database).
 - Filters live in URL search params so views are shareable and saveable
   (`course`, `cohort`, `region`, `range` | `from`/`to`; parse with `lib/filters.ts`).
 - PM/Leadership mode: cookie `cc-mode` is the preference; `?mode=pm|leadership`
   overrides it for that page view only and never writes the cookie (`lib/mode.ts`).
-- Run `npm run lint` and `npm run build` before declaring a phase done.
+- Run `npm run lint`, `npm test` and `npm run build` before declaring a phase done.
 
 ## Build phases (do one at a time, commit after each)
 1. Foundation: schema, seed, app shell, theme, ⌘K, global filters, mode toggle, /data integrity page
+1.5. Accounts, workspaces and your own data
+   - Part A: PostgreSQL; Google sign-in (Auth.js), invite-only, every page requires login;
+     User/Workspace/Membership/Invite with owner/editor/viewer roles; workspaceId on every
+     entity and role checks in every lib/data function, with isolation tests; workspace
+     switcher; onboarding (create workspace, demo data or empty); Settings (rename, members,
+     invites, roles, remove, clear demo data); secrets in .env.local
+   - Part B: TBD
 2. Command Center home: attention queue, what changed, risk radar, portfolio health, daily brief
 3. Class Health + Learner Voice: low-rated detection, "Why?" drill-down, feedback clusters, sentiment
 4. Cohorts, timeline (collision warnings), launches, launch checklists

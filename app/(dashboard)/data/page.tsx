@@ -8,6 +8,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { requireWorkspace } from "@/lib/auth/session";
 import { getRecordCounts, runIntegrityChecks } from "@/lib/data/integrity";
 import { DEMO_TODAY } from "@/lib/domain/time";
 
@@ -16,11 +17,13 @@ export const metadata: Metadata = { title: "Data integrity" };
 const EVIDENCE_LIMIT = 3;
 
 export default async function DataPage() {
-  const [counts, checks] = await Promise.all([getRecordCounts(), runIntegrityChecks()]);
+  const ctx = await requireWorkspace();
+  const [counts, checks] = await Promise.all([getRecordCounts(ctx), runIntegrityChecks(ctx)]);
   const passing = checks.filter((c) => c.passed).length;
   const allPass = passing === checks.length;
   const totalRecords = counts.reduce((sum, c) => sum + c.count, 0);
   const belowTarget = counts.filter((c) => c.target != null && c.count < c.target);
+  const hasDemo = counts.some((c) => c.target != null); // targets only apply to demo data
   const anchor = DEMO_TODAY.toLocaleDateString("en-US", {
     weekday: "short",
     day: "numeric",
@@ -34,7 +37,8 @@ export default async function DataPage() {
       <header className="space-y-1">
         <h2 className="text-xl font-semibold tracking-tight">Data integrity</h2>
         <p className="text-sm text-muted-foreground">
-          Seed anchored to {anchor} · {totalRecords.toLocaleString()} records across{" "}
+          {ctx.workspace.name}
+          {hasDemo && ` · demo data anchored to ${anchor}`} · {totalRecords.toLocaleString()} records across{" "}
           {counts.length} entities · checked live against the database
         </p>
       </header>
@@ -62,7 +66,7 @@ export default async function DataPage() {
         </p>
         {!allPass && (
           <p className="text-sm text-muted-foreground">
-            Fix the seed, then run <code className="font-mono text-foreground">npm run db:reset</code>.
+            If this is demo data, fix <code className="font-mono text-foreground">lib/demo/seed.ts</code> and start a new workspace with demo data.
           </p>
         )}
       </section>

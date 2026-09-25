@@ -1,19 +1,22 @@
-// ⌘K search, against the seeded database. Run with `npm test` (after `npm run db:seed`).
-import "dotenv/config";
+// ⌘K search over a demo workspace. Run with `npm test`.
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { db } from "@/lib/db";
 import { getSearchIndex } from "@/lib/data/search";
 import { GROUP_ORDER, highlightSegments, matchRanges, searchRecords, suggestQueries } from "@/lib/search";
 import type { SearchItem } from "@/lib/search-types";
+import { ctx, makeUser, makeWorkspace, resetDb } from "./helpers";
 
 let index: SearchItem[];
 before(async () => {
-  index = await getSearchIndex();
+  await resetDb();
+  const owner = await makeUser("owner@search.test");
+  const ws = await makeWorkspace(owner.id, "Search", { demo: true });
+  index = await getSearchIndex(await ctx(owner.id, ws.id));
 });
 after(() => db.$disconnect());
 
-describe("searching the seeded data", () => {
+describe("searching demo data", () => {
   test('"rag" returns results in at least 5 groups', () => {
     const groups = searchRecords(index, "rag");
     const types = groups.map((g) => g.type);

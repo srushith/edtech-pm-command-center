@@ -1,7 +1,7 @@
-// Static fixtures for the seed. Nothing here is random; seed.ts combines these
-// with a seeded PRNG so every run produces identical data.
+// Static fixtures for the demo data. Nothing here is random; seed.ts combines these
+// with a seeded PRNG so every workspace gets identical demo data.
 
-import type { Region, Sentiment } from "../lib/generated/prisma/enums";
+import type { Region, Sentiment } from "@/lib/generated/prisma/enums";
 
 export const COURSES: {
   code: string;
