@@ -16,11 +16,14 @@ export const ENTITY_LABELS: Record<EntityType, string> = {
   feedback: "Learner feedback",
 };
 
+/** Searchable text that isn't shown in the label/sublabel (description, tags, email…). */
+export type SearchField = { name: string; text: string };
+
 export type SearchItem = {
   type: EntityType;
   id: string;
   label: string;
   sublabel: string;
-  keywords: string[];
+  fields: SearchField[];
   href: string;
 };

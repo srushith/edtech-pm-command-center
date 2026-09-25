@@ -82,9 +82,11 @@ const CANCELLED_SESSIONS = new Set(["PM-C1#4", "EM-C1#3"]);
 const SCHEDULE_HORIZON_DAYS = 28; // sessions are scheduled up to 4 weeks ahead
 
 // Curriculum work in flight that isn't being taught yet.
-const PIPELINE_MODULES: { course: string; title: string; stage: ModuleStage }[] = [
-  { course: "AAI", title: "Agent Security & Red Teaming", stage: "PLANNED" },
-  { course: "TGA", title: "Responsible AI for Leaders", stage: "DRAFTING" },
+const PIPELINE_MODULES: (F.ModuleDef & { course: string; stage: ModuleStage })[] = [
+  { course: "AAI", title: "Agent Security & Red Teaming", stage: "PLANNED", tags: "agents,security,red-teaming",
+    description: "Prompt injection, tool misuse and red-teaming agent systems before launch." },
+  { course: "TGA", title: "Responsible AI for Leaders", stage: "DRAFTING", tags: "responsible-ai,governance",
+    description: "Risk, governance and policy for leaders rolling out GenAI." },
 ];
 const FDE_MODULE_STAGES: ModuleStage[] = ["SME_REVIEW", "DRAFTING"];
 
@@ -165,6 +167,7 @@ async function main() {
     name: c.name,
     region: c.region,
     track: c.track,
+    description: c.description,
     status: c.inDevelopment ? ("IN_DEVELOPMENT" as const) : ("ACTIVE" as const),
     createdAt: addDays(ANCHOR, c.inDevelopment ? -90 : -500 + i * 30),
   }));
@@ -197,10 +200,10 @@ async function main() {
   // ---------- Modules & versions ----------
   const modules: Prisma.ModuleCreateManyInput[] = [];
   const versions: Prisma.ModuleVersionCreateManyInput[] = [];
-  const publishedByCourse = new Map<string, { id: string; title: string }[]>();
+  const publishedByCourse = new Map<string, { id: string; title: string; tags: string[] }[]>();
   const contentOwners = ["Content: Mei", "Content: Arun", "Srushith"];
 
-  function addModule(courseCode: string, title: string, order: number, stage: ModuleStage) {
+  function addModule(courseCode: string, { title, description, tags }: F.ModuleDef, order: number, stage: ModuleStage) {
     const id = `mod_${courseCode.toLowerCase()}_${order}`;
     const published = stage === "PUBLISHED";
     const versionCount = published ? int(2, 4) : stage === "PLANNED" ? 0 : 1;
@@ -226,6 +229,8 @@ async function main() {
       id,
       courseId: courseByCode.get(courseCode)!.id,
       title,
+      description,
+      tags,
       order,
       stage,
       ownerName: pick(contentOwners),
@@ -237,18 +242,18 @@ async function main() {
     });
     if (published) {
       const list = publishedByCourse.get(courseCode) ?? [];
-      list.push({ id, title });
+      list.push({ id, title, tags: tags.split(",") });
       publishedByCourse.set(courseCode, list);
     }
   }
 
-  for (const [courseCode, titles] of Object.entries(F.MODULES)) {
-    titles.forEach((title, i) =>
-      addModule(courseCode, title, i + 1, courseCode === "FDE" ? FDE_MODULE_STAGES[i] : "PUBLISHED"),
+  for (const [courseCode, defs] of Object.entries(F.MODULES)) {
+    defs.forEach((def, i) =>
+      addModule(courseCode, def, i + 1, courseCode === "FDE" ? FDE_MODULE_STAGES[i] : "PUBLISHED"),
     );
   }
   for (const p of PIPELINE_MODULES) {
-    addModule(p.course, p.title, F.MODULES[p.course].length + 1, p.stage);
+    addModule(p.course, p, F.MODULES[p.course].length + 1, p.stage);
   }
 
   // ---------- Sessions & feedback ----------
@@ -318,6 +323,11 @@ async function main() {
           const sentiment = sentimentForRating(rating);
           const theme =
             sentiment === "NEGATIVE" && biasTheme && chance(0.75) ? biasTheme : pick(F.THEMES[sentiment]);
+          // One draw from generic + topic comments, so topic text doesn't shift the PRNG stream.
+          const comments = [
+            ...F.COMMENTS[sentiment][theme],
+            ...mod.tags.flatMap((t) => F.TOPIC_COMMENTS[t]?.[sentiment]?.[theme] ?? []),
+          ];
           ratings.push(rating);
           feedback.push({
             id: `fb_${String(feedback.length + 1).padStart(5, "0")}`,
@@ -327,7 +337,7 @@ async function main() {
             rating,
             sentiment,
             theme,
-            comment: pick(F.COMMENTS[sentiment][theme]),
+            comment: pick(comments),
             createdAt: minDate(addHours(scheduledAt, int(1, 36)), addHours(ANCHOR, -1)),
           });
         }
@@ -405,6 +415,7 @@ async function main() {
       id: `iss_${101 + i}`,
       code: `ISS-${101 + i}`,
       title: t.title,
+      description: t.description,
       category: t.category,
       severity: t.severity,
       status,
@@ -445,6 +456,7 @@ async function main() {
       projects.push({
         id: `prj_${cohort.code.toLowerCase().replace("-", "_")}_${type.toLowerCase()}`,
         title: `${course.name} ${type === "CAPSTONE" ? "Capstone" : "Mid-program Project"}`,
+        description: F.PROJECT_BRIEFS[course.code][type],
         type,
         status,
         courseId: course.id,

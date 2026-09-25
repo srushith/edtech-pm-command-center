@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { FilterX, Loader2, Moon, Presentation, Sun, UserRound } from "lucide-react";
+import { ChevronDown, ChevronUp, FilterX, Loader2, Moon, Presentation, Search, Sun, UserRound } from "lucide-react";
 import { useTheme } from "next-themes";
 import {
   Command,
   CommandDialog,
-  CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
@@ -17,35 +16,35 @@ import {
 import { ALL_SECTIONS, SECTIONS } from "@/lib/nav";
 import { activeFilterCount, applyFilters, EMPTY_FILTERS, parseFilters } from "@/lib/filters";
 import { MODE_LABELS } from "@/lib/mode";
-import { ENTITY_LABELS, type EntityType, type SearchItem } from "@/lib/search-types";
+import { GROUP_LIMIT, highlightSegments, matchesAll, parseQuery, searchRecords, suggestQueries } from "@/lib/search";
+import type { EntityType, SearchItem } from "@/lib/search-types";
 import { searchIndex } from "@/app/(dashboard)/actions";
 import { useHrefWithFilters, useMode, useShell } from "@/components/shell/shell-context";
 
-const ENTITY_ORDER = Object.keys(ENTITY_LABELS) as EntityType[];
 const GO_TIMEOUT_MS = 1200;
-
-// Every typed word must appear somewhere in the item's text; label-prefix hits rank first.
-// Stricter than cmdk's default fuzzy match, which over-matches on a few hundred records.
-function filter(value: string, search: string, keywords?: string[]) {
-  const haystack = `${value} ${keywords?.join(" ") ?? ""}`.toLowerCase();
-  const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!terms.every((t) => haystack.includes(t))) return 0;
-  const label = value.slice(value.indexOf(" ") + 1).toLowerCase();
-  return label.startsWith(terms[0] ?? "") ? 1 : 0.5;
-}
 
 function isTyping(target: EventTarget | null) {
   const el = target as HTMLElement | null;
   return !!el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName));
 }
 
+function Highlight({ text, terms }: { text: string; terms: string[] }) {
+  return (
+    <>
+      {highlightSegments(text, terms).map((s, i) =>
+        s.match ? (
+          <mark key={i} className="rounded-[2px] bg-foreground/15 font-semibold text-foreground">{s.text}</mark>
+        ) : (
+          <span key={i}>{s.text}</span>
+        ),
+      )}
+    </>
+  );
+}
+
 export function CommandPalette() {
   const router = useRouter();
-  const pathname = usePathname();
-  const params = useSearchParams();
   const { paletteOpen: open, setPaletteOpen: setOpen } = useShell();
-  const { mode, setMode } = useMode();
-  const { resolvedTheme, setTheme } = useTheme();
   const withFilters = useHrefWithFilters();
   const [index, setIndex] = useState<SearchItem[] | null>(null);
   const [error, setError] = useState(false);
@@ -90,79 +89,170 @@ export function CommandPalette() {
     });
   }, [open, index, loading]);
 
+  return (
+    <CommandDialog open={open} onOpenChange={setOpen} title="Command palette" description="Jump to a section or search courses, modules, projects, sessions, issues, feedback and people" className="sm:max-w-xl">
+      {/* The dialog unmounts its content on close, so the query resets each time it opens. */}
+      <PaletteContent index={index} loading={loading} error={error} close={() => setOpen(false)} />
+    </CommandDialog>
+  );
+}
+
+function PaletteContent({
+  index,
+  loading,
+  error,
+  close,
+}: {
+  index: SearchItem[] | null;
+  loading: boolean;
+  error: boolean;
+  close: () => void;
+}) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const { mode, setMode } = useMode();
+  const { resolvedTheme, setTheme } = useTheme();
+  const withFilters = useHrefWithFilters();
+  const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState<EntityType | null>(null);
+
+  const terms = parseQuery(query);
+  const groups = useMemo(() => searchRecords(index ?? [], query), [index, query]);
+
   const run = (fn: () => void) => {
-    setOpen(false);
+    close();
     fn();
   };
 
   const filters = parseFilters(params);
-  const grouped = ENTITY_ORDER.map((type) => ({ type, items: index?.filter((i) => i.type === type) ?? [] }));
   const otherMode = mode === "pm" ? "leadership" : "pm";
+  const actions = [
+    {
+      id: "theme", text: `Switch to ${resolvedTheme === "light" ? "dark" : "light"} theme`, keywords: "dark light appearance",
+      icon: resolvedTheme === "light" ? Moon : Sun,
+      onSelect: () => setTheme(resolvedTheme === "light" ? "dark" : "light"),
+    },
+    {
+      id: "mode", text: `Switch to ${MODE_LABELS[otherMode]} view`, keywords: "pm leadership mode view",
+      icon: otherMode === "leadership" ? Presentation : UserRound,
+      onSelect: () => setMode(otherMode),
+    },
+    ...(activeFilterCount(filters) > 0
+      ? [{
+          id: "clear-filters", text: "Clear all filters", keywords: "reset", icon: FilterX,
+          onSelect: () => {
+            const qs = applyFilters(params, EMPTY_FILTERS).toString();
+            router.replace(`${pathname}${qs ? `?${qs}` : ""}`, { scroll: false });
+          },
+        }]
+      : []),
+  ].filter((a) => matchesAll([a.text, a.keywords], terms));
+  const sections = ALL_SECTIONS.filter((s) => matchesAll([s.title, s.description], terms));
+
+  const nothingFound = terms.length > 0 && !!index && groups.length === 0 && sections.length === 0 && actions.length === 0;
+  const suggestions = nothingFound ? suggestQueries(index, query) : [];
 
   return (
-    <CommandDialog open={open} onOpenChange={setOpen} title="Command palette" description="Jump to a section or search courses, cohorts, people, sessions and issues" className="sm:max-w-xl">
-      <Command loop filter={filter}>
-        <CommandInput placeholder="Search sections, courses, cohorts, people, issues…" />
-        <CommandList className="max-h-[60vh]">
-          <CommandEmpty>{loading ? "Loading records…" : "No matches."}</CommandEmpty>
-
+    <Command loop shouldFilter={false}>
+      <CommandInput
+        value={query}
+        onValueChange={(v) => {
+          setQuery(v);
+          setExpanded(null);
+        }}
+        placeholder="Search courses, modules, sessions, issues, feedback, people…"
+      />
+      <CommandList className="max-h-[60vh]">
+        {sections.length > 0 && (
           <CommandGroup heading="Go to">
-            {ALL_SECTIONS.map((s) => (
-              <CommandItem key={s.id} value={`go ${s.title}`} keywords={[s.description]} onSelect={() => run(() => router.push(withFilters(s.href)))}>
+            {sections.map((s) => (
+              <CommandItem key={s.id} value={`go:${s.id}`} onSelect={() => run(() => router.push(withFilters(s.href)))}>
                 <s.icon />
-                <span>{s.title}</span>
+                <span><Highlight text={s.title} terms={terms} /></span>
                 <CommandShortcut>G {s.shortcut.toUpperCase()}</CommandShortcut>
               </CommandItem>
             ))}
           </CommandGroup>
+        )}
 
+        {actions.length > 0 && (
           <CommandGroup heading="Actions">
-            <CommandItem value="toggle theme" keywords={["dark", "light", "appearance"]} onSelect={() => run(() => setTheme(resolvedTheme === "light" ? "dark" : "light"))}>
-              {resolvedTheme === "light" ? <Moon /> : <Sun />}
-              <span>Switch to {resolvedTheme === "light" ? "dark" : "light"} theme</span>
-            </CommandItem>
-            <CommandItem value="switch mode" keywords={["pm", "leadership", "view"]} onSelect={() => run(() => setMode(otherMode))}>
-              {otherMode === "leadership" ? <Presentation /> : <UserRound />}
-              <span>Switch to {MODE_LABELS[otherMode]} view</span>
-            </CommandItem>
-            {activeFilterCount(filters) > 0 && (
-              <CommandItem value="clear filters" keywords={["reset"]} onSelect={() => run(() => {
-                const qs = applyFilters(params, EMPTY_FILTERS).toString();
-                router.replace(`${pathname}${qs ? `?${qs}` : ""}`, { scroll: false });
-              })}>
-                <FilterX />
-                <span>Clear all filters</span>
+            {actions.map((a) => (
+              <CommandItem key={a.id} value={`action:${a.id}`} onSelect={() => run(a.onSelect)}>
+                <a.icon />
+                <span><Highlight text={a.text} terms={terms} /></span>
               </CommandItem>
-            )}
+            ))}
           </CommandGroup>
+        )}
 
-          {loading && !index && (
-            <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
-              <Loader2 className="size-3.5 animate-spin" /> Loading records…
-            </div>
-          )}
-          {error && <div className="px-3 py-2 text-xs text-red-400">Couldn&apos;t load records. Close and reopen to retry.</div>}
+        {loading && !index && (
+          <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" /> Loading records…
+          </div>
+        )}
+        {error && <div className="px-3 py-2 text-xs text-red-400">Couldn&apos;t load records. Close and reopen to retry.</div>}
 
-          {grouped.map(({ type, items }) =>
-            items.length === 0 ? null : (
-              <CommandGroup key={type} heading={ENTITY_LABELS[type]}>
-                {items.map((i) => (
-                  <CommandItem key={`${i.type}:${i.id}`} value={`${i.type}:${i.id} ${i.label}`} keywords={[i.sublabel, ...i.keywords]} onSelect={() => run(() => router.push(withFilters(i.href)))}>
-                    <div className="flex min-w-0 flex-col">
-                      <span className="truncate">{i.label}</span>
-                      <span className="truncate text-[11px] text-muted-foreground">{i.sublabel}</span>
-                    </div>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            ),
-          )}
-        </CommandList>
-        <div className="flex items-center justify-between border-t px-3 py-1.5 text-[11px] text-muted-foreground">
-          <span>{index ? `${index.length} records · ${SECTIONS.length} sections` : " "}</span>
-          <span>↑↓ navigate · ↵ open · esc close</span>
-        </div>
-      </Command>
-    </CommandDialog>
+        {groups.map(({ type, label, hits }) => {
+          const showAll = expanded === type;
+          const shown = showAll ? hits : hits.slice(0, GROUP_LIMIT);
+          return (
+            <CommandGroup
+              key={type}
+              heading={<>{label} <span className="tabular-nums text-muted-foreground/70">· {hits.length}</span></>}
+            >
+              {shown.map(({ item: i, snippet }) => (
+                <CommandItem key={`${i.type}:${i.id}`} value={`${i.type}:${i.id}`} onSelect={() => run(() => router.push(withFilters(i.href)))}>
+                  <div className="flex min-w-0 flex-col">
+                    <span className="truncate"><Highlight text={i.label} terms={terms} /></span>
+                    <span className="truncate text-[11px] text-muted-foreground"><Highlight text={i.sublabel} terms={terms} /></span>
+                    {snippet && (
+                      <span className="truncate text-[11px] text-muted-foreground">
+                        {snippet.name}: <Highlight text={snippet.text} terms={terms} />
+                      </span>
+                    )}
+                  </div>
+                </CommandItem>
+              ))}
+              {hits.length > GROUP_LIMIT && (
+                <CommandItem
+                  value={`see-all:${type}`}
+                  onSelect={() => setExpanded(showAll ? null : type)}
+                  className="text-xs text-muted-foreground"
+                >
+                  {showAll ? <ChevronUp /> : <ChevronDown />}
+                  {showAll ? `Show top ${GROUP_LIMIT}` : `See all ${hits.length} ${label.toLowerCase()}`}
+                </CommandItem>
+              )}
+            </CommandGroup>
+          );
+        })}
+
+        {nothingFound && (
+          <div className="px-3 pt-5 pb-2 text-center text-sm">
+            <p>No results for &ldquo;{query.trim()}&rdquo;.</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Search matches the start of words in names, titles, descriptions, tags and feedback. Try fewer
+              words, a course or cohort code (AIE, AAI-C2), a person&apos;s name, or a topic.
+            </p>
+          </div>
+        )}
+        {suggestions.length > 0 && (
+          <CommandGroup heading="Try">
+            {suggestions.map((s) => (
+              <CommandItem key={s} value={`suggest:${s}`} onSelect={() => setQuery(s)}>
+                <Search />
+                <span>{s}</span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
+      </CommandList>
+      <div className="flex items-center justify-between border-t px-3 py-1.5 text-[11px] text-muted-foreground">
+        <span>{index ? `${index.length} records · ${SECTIONS.length} sections` : " "}</span>
+        <span>↑↓ navigate · ↵ open · esc close</span>
+      </div>
+    </Command>
   );
 }

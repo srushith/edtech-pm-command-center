@@ -111,13 +111,14 @@ enum LaunchStatus {
 // ---------- Core entities ----------
 
 model Course {
-  id        String       @id @default(cuid())
-  code      String       @unique
-  name      String
-  region    Region
-  track     String
-  status    CourseStatus
-  createdAt DateTime     @default(now())
+  id          String       @id @default(cuid())
+  code        String       @unique
+  name        String
+  region      Region
+  track       String
+  description String
+  status      CourseStatus
+  createdAt   DateTime     @default(now())
 
   cohorts  Cohort[]
   modules  Module[]
@@ -179,6 +180,8 @@ model Module {
   courseId    String
   course      Course      @relation(fields: [courseId], references: [id])
   title       String
+  description String
+  tags        String // comma-separated, like Instructor.expertise
   order       Int
   stage       ModuleStage
   ownerName   String
@@ -250,21 +253,22 @@ model LearnerFeedback {
 }
 
 model Issue {
-  id         String        @id @default(cuid())
-  code       String        @unique
-  title      String
-  category   IssueCategory
-  severity   Severity
-  status     IssueStatus
-  ownerName  String?
-  courseId   String?
-  course     Course?       @relation(fields: [courseId], references: [id])
-  cohortId   String?
-  cohort     Cohort?       @relation(fields: [cohortId], references: [id])
-  sessionId  String?
-  session    Session?      @relation(fields: [sessionId], references: [id])
-  openedAt   DateTime
-  resolvedAt DateTime?
+  id          String        @id @default(cuid())
+  code        String        @unique
+  title       String
+  description String
+  category    IssueCategory
+  severity    Severity
+  status      IssueStatus
+  ownerName   String?
+  courseId    String?
+  course      Course?       @relation(fields: [courseId], references: [id])
+  cohortId    String?
+  cohort      Cohort?       @relation(fields: [cohortId], references: [id])
+  sessionId   String?
+  session     Session?      @relation(fields: [sessionId], references: [id])
+  openedAt    DateTime
+  resolvedAt  DateTime?
 
   @@index([status])
 }
@@ -272,6 +276,7 @@ model Issue {
 model Project {
   id          String        @id @default(cuid())
   title       String
+  description String
   type        ProjectType
   status      ProjectStatus
   courseId    String
