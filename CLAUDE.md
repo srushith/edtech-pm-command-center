@@ -77,6 +77,16 @@ the sidebar footer and in ⌘K. The sidebar header is the workspace switcher.
     Switching workspaces drops URL filters (codes belong to a workspace).
   - Any new data function needs a test in `tests/tenancy.test.ts` proving another workspace's
     member can't read or change its records.
+- Record writes (create/edit) go through `saveRecord()` in `lib/data/records.ts`, never ad-hoc Prisma:
+  - Each type is defined once in `lib/records/<type>.ts`: zod schema (form strings in, typed
+    values out), form fields, and `checks` (cross-field/cross-record rules). The same schema and
+    checks run in the browser for instant errors and on the server against fresh workspace data.
+  - Server-only rules (uniqueness, existing children that constrain an edit) live in the type's
+    handler in `lib/data/records.ts`, as do derived values (ratings, cohort status, checklists).
+  - Every save logs an ActivityEvent (created / updated / status_changed) in the same transaction.
+  - Derived fields are never form inputs: sentiment, learnerId, issue code, cohort status, module
+    order, instructor rating, and session rating once the session has feedback.
+  - "Now" is the wall clock for user rows and DEMO_TODAY for demo rows (`nowFor` in lib/domain/time.ts).
 - Secrets only in `.env.local` (gitignored via `.env*`); `.env.example` lists every key, no values.
 - Schema changes: edit `prisma/schema.prisma`, then `npm run db:migrate` and commit the migration.
 - Tests: `npm test` runs against `DATABASE_URL_TEST` only (it wipes that database).
@@ -94,7 +104,11 @@ the sidebar footer and in ⌘K. The sidebar header is the workspace switcher.
      entity and role checks in every lib/data function, with isolation tests; workspace
      switcher; onboarding (create workspace, demo data or empty); Settings (rename, members,
      invites, roles, remove, clear demo data); secrets in .env.local
-   - Part B: TBD
+   - Part B: create/edit forms (side sheet, zod validation, consistency rules) for Courses,
+     Cohorts, Launches, Modules, Instructors, SMEs, Projects, Issues, Sessions (rating and
+     attendance) and Learner feedback; Add on each section page, Edit in tables and from ⌘K;
+     Quick add (C); ActivityEvent on every save; ⌘K reloads after saves; viewers get no
+     Add/Edit and the server enforces the role
 2. Command Center home: attention queue, what changed, risk radar, portfolio health, daily brief
 3. Class Health + Learner Voice: low-rated detection, "Why?" drill-down, feedback clusters, sentiment
 4. Cohorts, timeline (collision warnings), launches, launch checklists

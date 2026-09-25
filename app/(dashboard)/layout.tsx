@@ -5,6 +5,9 @@ import { AppSidebar } from "@/components/shell/app-sidebar";
 import { CommandPalette } from "@/components/shell/command-palette";
 import { ShellProvider } from "@/components/shell/shell-context";
 import { TopBar } from "@/components/shell/top-bar";
+import { QuickAdd } from "@/components/records/quick-add";
+import { RecordSheet } from "@/components/records/record-sheet";
+import { hasRole } from "@/lib/auth/roles";
 import { listWorkspaces } from "@/lib/auth/access";
 import { requireUser, requireWorkspace } from "@/lib/auth/session";
 import { getFilterOptions } from "@/lib/data/filters";
@@ -20,7 +23,7 @@ export default async function DashboardLayout({ children }: LayoutProps<"/">) {
   const sidebarOpen = cookieStore.get("sidebar_state")?.value !== "false";
 
   return (
-    <ShellProvider initialMode={mode ?? "pm"}>
+    <ShellProvider initialMode={mode ?? "pm"} canEdit={hasRole(ctx.role, "EDITOR")}>
       <SidebarProvider defaultOpen={sidebarOpen}>
         {/* The shell reads search params for filters and the ?mode override. */}
         <Suspense>
@@ -35,6 +38,8 @@ export default async function DashboardLayout({ children }: LayoutProps<"/">) {
         <Suspense>
           <CommandPalette />
         </Suspense>
+        <RecordSheet />
+        <QuickAdd />
       </SidebarProvider>
     </ShellProvider>
   );

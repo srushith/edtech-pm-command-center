@@ -4,22 +4,57 @@ import { createContext, useCallback, useContext, useMemo, useState } from "react
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { FILTER_KEYS } from "@/lib/filters";
 import { MODE_COOKIE, MODE_PARAM, parseMode, resolveMode, type Mode } from "@/lib/mode";
+import type { EntityType } from "@/lib/search-types";
 
 const ONE_YEAR = 60 * 60 * 24 * 365;
+
+export type RecordFormTarget = { type: EntityType; id: string | null };
 
 type ShellContext = {
   cookieMode: Mode;
   setMode: (mode: Mode) => void;
   paletteOpen: boolean;
   setPaletteOpen: (open: boolean) => void;
+  /** Editors and owners. UI only: the server checks the role on every write. */
+  canEdit: boolean;
+  recordForm: RecordFormTarget | null;
+  openRecordForm: (type: EntityType, id?: string | null) => void;
+  closeRecordForm: () => void;
+  quickAddOpen: boolean;
+  setQuickAddOpen: (open: boolean) => void;
+  /** Bumped after every save so the ⌘K index reloads. */
+  searchVersion: number;
+  invalidateSearch: () => void;
 };
 
 const Ctx = createContext<ShellContext | null>(null);
 
-export function ShellProvider({ initialMode, children }: { initialMode: Mode; children: React.ReactNode }) {
+export function ShellProvider({
+  initialMode,
+  canEdit,
+  children,
+}: {
+  initialMode: Mode;
+  canEdit: boolean;
+  children: React.ReactNode;
+}) {
   const router = useRouter();
   const [cookieMode, setCookieMode] = useState(initialMode);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [recordForm, setRecordForm] = useState<RecordFormTarget | null>(null);
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [searchVersion, setSearchVersion] = useState(0);
+  const openRecordForm = useCallback(
+    (type: EntityType, id: string | null = null) => {
+      if (!canEdit) return;
+      setPaletteOpen(false);
+      setQuickAddOpen(false);
+      setRecordForm({ type, id });
+    },
+    [canEdit],
+  );
+  const closeRecordForm = useCallback(() => setRecordForm(null), []);
+  const invalidateSearch = useCallback(() => setSearchVersion((v) => v + 1), []);
 
   const setMode = useCallback(
     (mode: Mode) => {
@@ -37,8 +72,11 @@ export function ShellProvider({ initialMode, children }: { initialMode: Mode; ch
   );
 
   const value = useMemo(
-    () => ({ cookieMode, setMode, paletteOpen, setPaletteOpen }),
-    [cookieMode, setMode, paletteOpen],
+    () => ({
+      cookieMode, setMode, paletteOpen, setPaletteOpen, canEdit,
+      recordForm, openRecordForm, closeRecordForm, quickAddOpen, setQuickAddOpen, searchVersion, invalidateSearch,
+    }),
+    [cookieMode, setMode, paletteOpen, canEdit, recordForm, openRecordForm, closeRecordForm, quickAddOpen, searchVersion, invalidateSearch],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

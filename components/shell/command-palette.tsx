@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, ChevronUp, FilterX, Loader2, Moon, Presentation, Search, Sun, UserRound } from "lucide-react";
+import { ChevronDown, ChevronUp, FilterX, Loader2, Moon, Plus, Presentation, Search, Sun, UserRound } from "lucide-react";
 import { useTheme } from "next-themes";
 import {
   Command,
@@ -14,6 +14,7 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { ALL_SECTIONS, SECTIONS } from "@/lib/nav";
+import { RECORD_TYPES, RECORDS } from "@/lib/records/registry";
 import { activeFilterCount, applyFilters, EMPTY_FILTERS, parseFilters } from "@/lib/filters";
 import { MODE_LABELS } from "@/lib/mode";
 import { GROUP_LIMIT, highlightSegments, matchesAll, parseQuery, searchRecords, suggestQueries } from "@/lib/search";
@@ -44,7 +45,7 @@ function Highlight({ text, terms }: { text: string; terms: string[] }) {
 
 export function CommandPalette() {
   const router = useRouter();
-  const { paletteOpen: open, setPaletteOpen: setOpen } = useShell();
+  const { paletteOpen: open, setPaletteOpen: setOpen, canEdit, setQuickAddOpen, searchVersion, quickAddOpen, recordForm } = useShell();
   const withFilters = useHrefWithFilters();
   const [index, setIndex] = useState<SearchItem[] | null>(null);
   const [error, setError] = useState(false);
@@ -59,7 +60,7 @@ export function CommandPalette() {
         setOpen(!open);
         return;
       }
-      if (open || e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return;
+      if (open || quickAddOpen || recordForm || e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return;
       if (goPending.current != null) {
         window.clearTimeout(goPending.current);
         goPending.current = null;
@@ -71,14 +72,20 @@ export function CommandPalette() {
         return;
       }
       if (e.key === "g") goPending.current = window.setTimeout(() => (goPending.current = null), GO_TIMEOUT_MS);
+      // "c" alone is Quick add ("g" then "c" is Cohorts, handled above).
+      else if (e.key === "c" && canEdit) {
+        e.preventDefault();
+        setQuickAddOpen(true);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, setOpen, router, withFilters]);
+  }, [open, setOpen, router, withFilters, canEdit, setQuickAddOpen, quickAddOpen, recordForm]);
 
-  // Load the entity index the first time the palette opens, then keep it for the session.
+  // (Re)load the entity index each time the palette opens and after every save; the
+  // previous copy stays searchable meanwhile, so new records show up without a wait.
   useEffect(() => {
-    if (!open || index || loading) return;
+    if (!open) return;
     startLoading(async () => {
       try {
         setIndex(await searchIndex());
@@ -87,7 +94,7 @@ export function CommandPalette() {
         setError(true);
       }
     });
-  }, [open, index, loading]);
+  }, [open, searchVersion]);
 
   return (
     <CommandDialog open={open} onOpenChange={setOpen} title="Command palette" description="Jump to a section or search courses, modules, projects, sessions, issues, feedback and people" className="sm:max-w-xl">
@@ -112,6 +119,7 @@ function PaletteContent({
   const pathname = usePathname();
   const params = useSearchParams();
   const { mode, setMode } = useMode();
+  const { canEdit, openRecordForm, setQuickAddOpen } = useShell();
   const { resolvedTheme, setTheme } = useTheme();
   const withFilters = useHrefWithFilters();
   const [query, setQuery] = useState("");
@@ -147,6 +155,15 @@ function PaletteContent({
           },
         }]
       : []),
+    // Creating records (editors and owners): one Quick add entry until you type, then "New cohort…" etc.
+    ...(!canEdit
+      ? []
+      : terms.length === 0
+        ? [{ id: "quick-add", text: "Quick add…", keywords: "new create add", icon: Plus, shortcut: "C", onSelect: () => setQuickAddOpen(true) }]
+        : RECORD_TYPES.map((t) => ({
+            id: `new-${t}`, text: `New ${RECORDS[t].noun}…`, keywords: "add create quick", icon: Plus,
+            onSelect: () => openRecordForm(t),
+          }))),
   ].filter((a) => matchesAll([a.text, a.keywords], terms));
   const sections = ALL_SECTIONS.filter((s) => matchesAll([s.title, s.description], terms));
 
@@ -182,6 +199,7 @@ function PaletteContent({
               <CommandItem key={a.id} value={`action:${a.id}`} onSelect={() => run(a.onSelect)}>
                 <a.icon />
                 <span><Highlight text={a.text} terms={terms} /></span>
+                {"shortcut" in a && a.shortcut && <CommandShortcut>{a.shortcut}</CommandShortcut>}
               </CommandItem>
             ))}
           </CommandGroup>

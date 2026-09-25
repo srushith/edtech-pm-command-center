@@ -1,7 +1,7 @@
 import type { WorkspaceContext } from "@/lib/auth/access";
 import { scopedDb } from "@/lib/data/scoped";
 import { mean, RESPONSE_RATE_BAND, round2, sentimentForRating } from "@/lib/domain/feedback";
-import { DEMO_TODAY } from "@/lib/domain/time";
+import { inCohortWindow, nowFor } from "@/lib/domain/time";
 
 // ---------- Record counts ----------
 
@@ -72,7 +72,8 @@ function check(
 
 const fmtDate = (d: Date) => d.toISOString().slice(0, 16).replace("T", " ");
 
-export async function runIntegrityChecks(ctx: WorkspaceContext): Promise<IntegrityCheck[]> {
+// Demo rows are judged at DEMO_TODAY, your own rows against `now` (see nowFor).
+export async function runIntegrityChecks(ctx: WorkspaceContext, now = new Date()): Promise<IntegrityCheck[]> {
   const db = scopedDb(ctx);
   // The dataset is small; load once and check in memory so every rule is explicit.
   const [cohorts, sessions, feedback, instructors, projects, links] = await Promise.all([
@@ -81,13 +82,13 @@ export async function runIntegrityChecks(ctx: WorkspaceContext): Promise<Integri
     }),
     db.session.findMany({
       select: {
-        id: true, cohortId: true, instructorId: true, status: true,
+        id: true, cohortId: true, instructorId: true, status: true, isDemo: true,
         scheduledAt: true, attendance: true, avgRating: true, moduleId: true, smeId: true,
       },
     }),
     db.learnerFeedback.findMany({
       select: {
-        id: true, sessionId: true, cohortId: true, learnerId: true,
+        id: true, sessionId: true, cohortId: true, learnerId: true, isDemo: true,
         rating: true, sentiment: true, createdAt: true,
       },
     }),
@@ -125,8 +126,9 @@ export async function runIntegrityChecks(ctx: WorkspaceContext): Promise<Integri
       perSession.push({ recordId: s.id, detail: `${n} feedback rows but only ${att} attended` });
       continue;
     }
+    // The response-rate band is a plausibility rule for generated demo data only.
     const rate = att === 0 ? 0 : n / att;
-    if (rate < RESPONSE_RATE_BAND.min || rate > RESPONSE_RATE_BAND.max)
+    if (s.isDemo && (rate < RESPONSE_RATE_BAND.min || rate > RESPONSE_RATE_BAND.max))
       perSession.push({ recordId: s.id, detail: `Response rate ${(rate * 100).toFixed(0)}% (${n}/${att}) outside ${RESPONSE_RATE_BAND.min * 100}–${RESPONSE_RATE_BAND.max * 100}%` });
   }
 
@@ -167,7 +169,9 @@ export async function runIntegrityChecks(ctx: WorkspaceContext): Promise<Integri
   for (const s of sessions) {
     const avg = mean((feedbackBySession.get(s.id) ?? []).map((f) => f.rating));
     const expected = avg == null ? null : round2(avg);
-    if (expected == null ? s.avgRating != null : s.avgRating == null || Math.abs(s.avgRating - expected) > RATING_TOLERANCE)
+    // Without feedback, a completed non-demo session may carry a manual (survey) average.
+    const manualOk = !s.isDemo && s.status === "COMPLETED" && s.avgRating != null && s.avgRating >= 1 && s.avgRating <= 5;
+    if (expected == null ? s.avgRating != null && !manualOk : s.avgRating == null || Math.abs(s.avgRating - expected) > RATING_TOLERANCE)
       derived.push({ recordId: s.id, detail: `Session avgRating ${s.avgRating ?? "null"}, feedback mean ${expected ?? "null"}` });
   }
   for (const ins of instructors) {
@@ -182,9 +186,9 @@ export async function runIntegrityChecks(ctx: WorkspaceContext): Promise<Integri
   const timing: Violation[] = [];
   for (const s of sessions) {
     const c = cohortById.get(s.cohortId)!;
-    if (s.scheduledAt < c.startDate || s.scheduledAt > c.endDate)
+    if (!inCohortWindow(s.scheduledAt, c))
       timing.push({ recordId: s.id, detail: `${fmtDate(s.scheduledAt)} outside ${c.code} window` });
-    const future = s.scheduledAt >= DEMO_TODAY;
+    const future = s.scheduledAt >= nowFor(s, now);
     if (future && s.status !== "SCHEDULED")
       timing.push({ recordId: s.id, detail: `Future session marked ${s.status}` });
     if (!future && s.status === "SCHEDULED")
@@ -201,7 +205,7 @@ export async function runIntegrityChecks(ctx: WorkspaceContext): Promise<Integri
   }
   for (const f of feedback) {
     const s = sessionById.get(f.sessionId)!;
-    if (f.createdAt < s.scheduledAt || f.createdAt > DEMO_TODAY)
+    if (f.createdAt < s.scheduledAt || f.createdAt > nowFor(f, now))
       outcomes.push({ recordId: f.id, detail: `Submitted ${fmtDate(f.createdAt)}, session at ${fmtDate(s.scheduledAt)}` });
   }
 
@@ -239,10 +243,10 @@ export async function runIntegrityChecks(ctx: WorkspaceContext): Promise<Integri
 
   return [
     check("attendance", "Attendance ≤ enrolled learners", "Every completed session's attendance is between 0 and its cohort's enrolled learners.", held.length, "completed sessions", attendance),
-    check("feedback-per-session", "Feedback count fits attendance", `Feedback rows per session ≤ attendance, response rate ${RESPONSE_RATE_BAND.min * 100}–${RESPONSE_RATE_BAND.max * 100}%.`, held.length, "completed sessions", perSession),
+    check("feedback-per-session", "Feedback count fits attendance", `Feedback rows per session ≤ attendance; demo data also keeps a ${RESPONSE_RATE_BAND.min * 100}–${RESPONSE_RATE_BAND.max * 100}% response rate.`, held.length, "completed sessions", perSession),
     check("feedback-per-cohort", "Feedback fits cohort size", "Respondents are enrolled learners of the session's cohort; distinct respondents ≤ enrolled.", feedback.length, "feedback rows", perCohort),
     check("rating-sentiment", "Rating matches sentiment", "4–5 → positive, 3 → neutral, 1–2 → negative.", feedback.length, "feedback rows", sentiment),
-    check("derived-ratings", "Stored ratings match feedback", "Session avgRating = mean of its feedback; instructor rating = mean of their sessions (±0.005).", sessions.length + instructors.length, "sessions + instructors", derived),
+    check("derived-ratings", "Stored ratings match feedback", "Session avgRating = mean of its feedback (or a manual survey average when it has none); instructor rating = mean of their sessions (±0.005).", sessions.length + instructors.length, "sessions + instructors", derived),
     check("session-timing", "Sessions inside cohort window", "Sessions fall between cohort start and end; past ones aren't SCHEDULED, future ones are.", sessions.length, "sessions", timing),
     check("outcomes", "No outcomes before a session happens", "Only completed sessions have attendance, ratings or feedback; feedback is submitted after the session.", sessions.length + feedback.length, "sessions + feedback", outcomes),
     check("headcount", "Headcount within capacity", `Enrolled ≤ capacity < ${MAX_LEARNERS}; project submissions ≤ enrolled.`, cohorts.length + projects.length, "cohorts + projects", headcount),
