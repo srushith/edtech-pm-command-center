@@ -130,10 +130,11 @@ model User {
   image         String?
   createdAt     DateTime  @default(now())
 
-  accounts      Account[]
-  memberships   Membership[]
-  invitesSent   Invite[]
-  importSources ImportSource[]
+  accounts        Account[]
+  memberships     Membership[]
+  invitesSent     Invite[]
+  importSources   ImportSource[]
+  aiSettingsEdits WorkspaceAISettings[]
 }
 
 model Account {
@@ -175,6 +176,8 @@ model Workspace {
   activity       ActivityEvent[]
   importSources  ImportSource[]
   importRuns     ImportRun[]
+  aiSettings     WorkspaceAISettings?
+  aiUsage        AIUsageEvent[]
 }
 
 model Membership {
@@ -557,5 +560,50 @@ model ImportRun {
   createdAt   DateTime      @default(now())
 
   @@unique([id, workspaceId])
+  @@index([workspaceId, createdAt])
+}
+
+// ---------- AI (per workspace) ----------
+
+enum AIProviderKind {
+  OPENAI
+  GEMINI
+  ANTHROPIC
+}
+
+// Owner-managed. The API key is encrypted with ENCRYPTION_KEY (lib/crypto.ts) and never
+// leaves the server; keyLast4 is all the UI ever shows. No row / no key = mock AI.
+model WorkspaceAISettings {
+  workspaceId         String         @id
+  workspace           Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  provider            AIProviderKind @default(OPENAI)
+  model               String
+  encryptedKey        String?
+  keyLast4            String?
+  monthlyRequestLimit Int?
+  lastTestedAt        DateTime?
+  lastTestOk          Boolean?
+  lastTestMessage     String?
+  updatedById         String?
+  updatedBy           User?          @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+  updatedAt           DateTime       @updatedAt
+}
+
+// One row per request to a real provider (mock calls cost nothing and aren't logged).
+// Test-key calls are logged with isTest and don't count toward the monthly limit.
+model AIUsageEvent {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  feature      String // e.g. import.column-mapping, settings.test-key
+  provider     String
+  model        String
+  inputTokens  Int       @default(0)
+  outputTokens Int       @default(0)
+  ok           Boolean
+  error        String?
+  isTest       Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+
   @@index([workspaceId, createdAt])
 }

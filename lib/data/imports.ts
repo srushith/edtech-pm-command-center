@@ -5,7 +5,7 @@
 // Each import remembers its column mapping (ImportSource) so the next one from the same
 // sheet or CSV layout is one click, records an ImportRun, and logs one ActivityEvent.
 import { requireRole, type WorkspaceContext } from "@/lib/auth/access";
-import { getAIProvider, type ColumnSuggestion } from "@/lib/ai/provider";
+import { AIUnavailableError, describeAIMode, getAIProvider, type ColumnSuggestion } from "@/lib/ai/provider";
 import { scopedDb } from "@/lib/data/scoped";
 import {
   fieldChanges, isUniqueViolation, listRecordValues, persistRecord, validateRecord, validationContext,
@@ -153,6 +153,8 @@ export type MappingHelp = {
   exact: Mapping;
   /** AI suggestions, or null when AI isn't available. */
   ai: { provider: string; suggestions: ColumnSuggestion[] } | null;
+  /** Why there are no AI suggestions (AI off, limit reached, provider error), if so. */
+  aiNote: string | null;
   sourceName: string;
 };
 
@@ -173,22 +175,32 @@ export async function prepareMapping(
   const saved = await scopedDb(ctx).importSource.findUnique({
     where: { workspaceId_entityType_sourceKey: { workspaceId: ctx.workspace.id, entityType: type, sourceKey: sourceKeyFor(source, data.headers) } },
   });
-  const provider = await getAIProvider(ctx);
+  // AI is optional: with no provider, or if it fails, mapping continues by hand.
+  const { provider, mode } = await getAIProvider(ctx, { fetch: fetchImpl });
   const fields = importFields(type);
-  const suggestions = provider
-    ? await provider.suggestColumnMapping({
+  let ai: MappingHelp["ai"] = null;
+  let aiNote: string | null = provider ? null : describeAIMode(mode).detail;
+  if (provider) {
+    try {
+      const suggestions = await provider.suggestColumnMapping({
         recordType: type,
         columns: data.headers.map((h) => ({ header: h, samples: samples[h] })),
         fields: fields.map((f) => ({ name: f.name, label: f.label, kind: f.kind, required: !!f.required, options: f.options?.map((o) => o.label) })),
-      })
-    : null;
+      });
+      ai = { provider: provider.name, suggestions };
+    } catch (e) {
+      if (!(e instanceof AIUnavailableError)) throw e;
+      aiNote = `AI suggestions unavailable: ${e.message} Map columns by hand.`;
+    }
+  }
   return {
     headers: data.headers,
     samples,
     saved: (saved?.mapping as Mapping | undefined) ?? null,
     savedMatches: !!saved && saved.headerSignature === headerSignature(data.headers),
     exact: exactMapping(type, data.headers),
-    ai: provider && suggestions ? { provider: provider.name, suggestions } : null,
+    ai,
+    aiNote,
     sourceName: data.name,
   };
 }

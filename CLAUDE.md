@@ -20,7 +20,7 @@ Every signal follows: Metric -> Signal -> Evidence -> Root Cause -> Action.
 - Recharts for charts, lucide-react for icons, cmdk (shadcn Command) for the palette
 - Prisma ORM with PostgreSQL (Neon free tier), schema changes via `prisma migrate`
 - Auth.js (next-auth v5) with Google sign-in, JWT sessions, Prisma adapter
-- No paid services (no email sending: invites are pending records). AI is mocked behind `lib/ai/provider.ts` with a single
+- No paid services (no email sending: invites are pending records). AI runs through `lib/ai/provider.ts` with a single
   interface so a real provider can be plugged in later.
 
 ## Design rules
@@ -93,9 +93,18 @@ the sidebar footer and in ⌘K. The sidebar header is the workspace switcher.
   another record makes the row invalid rather than guessed. Blank cells keep existing values.
   Imports never delete. Sync uses the clicking user's own Google grant; refresh tokens are
   encrypted at rest (`lib/google/crypto.ts`).
-- AI goes through `getAIProvider(ctx)` in `lib/ai/provider.ts` only (mock until AI settings exist).
-  Every AI feature must also work fully without it (provider returns null), and AI output is
-  shown as a labelled "AI Insight" with its evidence and must be accepted by the user.
+- AI goes through `getAIProvider(ctx)` in `lib/ai/provider.ts` only: it returns the workspace's
+  real provider when an owner set a key, the mock when none is set, or null when AI is off
+  (monthly limit reached, CC_AI=off, key unreadable). It logs every real request (feature,
+  tokens) to AIUsageEvent and enforces the limit, so features never log or check limits
+  themselves. New AI features add a method to the AIProvider interface, implement it in
+  lib/ai (mock + real via a JSON request), and must work fully when the provider is null or
+  throws AIUnavailableError. AI output is shown as a labelled "AI Insight" with its evidence and
+  must be accepted by the user. `tests/ai.test.ts` fails if anything outside lib/ai reaches a
+  provider, the mock or a provider SDK directly.
+- Secrets at rest use `lib/crypto.ts` (AES-256-GCM, ENCRYPTION_KEY, bound to a purpose). API keys
+  are never returned to the browser: views carry only a masked last-4. Client components must not
+  import lib/crypto, lib/ai/provider(s) or lib/data/ai-settings (a test checks this).
 - Secrets only in `.env.local` (gitignored via `.env*`); `.env.example` lists every key, no values.
 - Schema changes: edit `prisma/schema.prisma`, then `npm run db:migrate` and commit the migration.
 - Tests: `npm test` runs against `DATABASE_URL_TEST` only (it wipes that database).
@@ -118,7 +127,10 @@ the sidebar footer and in ⌘K. The sidebar header is the workspace switcher.
      attendance) and Learner feedback; Add on each section page, Edit in tables and from ⌘K;
      Quick add (C); ActivityEvent on every save; ⌘K reloads after saves; viewers get no
      Add/Edit and the server enforces the role
-   - Part C: TBD
+   - Part C: AI settings per workspace (owners edit): provider (OpenAI default, Gemini, Anthropic),
+     API key encrypted with ENCRYPTION_KEY and shown masked, model, "Test key"; lib/ai/provider.ts
+     uses the workspace key or the mock; per-workspace usage log (requests, tokens) in Settings;
+     optional monthly request limit (AI off when reached); AI mode chip in the header
    - Part D: import for Courses, Cohorts, Instructors, SMEs, Modules from CSV or Google Sheets
      (read-only Sheets permission requested only when chosen); column mapping by hand, with
      AI suggestions via lib/ai/provider.ts; preview of new/updated/unchanged/invalid rows using

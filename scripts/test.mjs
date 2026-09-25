@@ -21,4 +21,4 @@ const run = (cmd, args) => {
 };
 
 run("npx", ["prisma", "migrate", "deploy"]);
-run("node", ["--import", "tsx", "--test", "--test-concurrency=1", ...(process.argv.slice(2).length ? process.argv.slice(2) : ["tests/**/*.test.ts"])]);
+run("node", ["--import", "./scripts/test-hooks.mjs", "--import", "tsx", "--test", "--test-concurrency=1", ...(process.argv.slice(2).length ? process.argv.slice(2) : ["tests/**/*.test.ts"])]);

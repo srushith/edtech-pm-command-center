@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import type { WorkspaceContext } from "@/lib/auth/access";
 import { AccessError, parseRole, ROLE_LABELS } from "@/lib/auth/roles";
 import { requireWorkspace } from "@/lib/auth/session";
+import { removeAIKey, saveAISettings, testAIKey } from "@/lib/data/ai-settings";
 import {
   changeRole,
   clearDemoData,
@@ -80,5 +81,39 @@ export async function clearDemoDataAction(): Promise<ActionResult> {
   return run(async (ctx) => {
     const n = await clearDemoData(ctx);
     return `Deleted ${n.toLocaleString()} demo records.`;
+  });
+}
+
+// ---------- AI (owners only; enforced in lib/data/ai-settings) ----------
+
+export async function saveAISettingsAction(_: ActionResult, form: FormData): Promise<ActionResult> {
+  return run(async (ctx) => {
+    await saveAISettings(ctx, {
+      provider: String(form.get("provider") ?? ""),
+      model: String(form.get("model") ?? ""),
+      apiKey: String(form.get("apiKey") ?? ""),
+      monthlyRequestLimit: String(form.get("monthlyRequestLimit") ?? ""),
+    });
+    return "AI settings saved.";
+  });
+}
+
+/** Tests the typed key, or the saved one when the key field is blank. Never returns the key. */
+export async function testAIKeyAction(input: { provider: string; model: string; apiKey: string }): Promise<ActionResult> {
+  const ctx = await requireWorkspace();
+  try {
+    const r = await testAIKey(ctx, input);
+    revalidatePath("/settings");
+    return r.ok ? { message: r.message } : { error: r.message };
+  } catch (e) {
+    if (e instanceof AccessError) return { error: e.message };
+    throw e;
+  }
+}
+
+export async function removeAIKeyAction(): Promise<ActionResult> {
+  return run(async (ctx) => {
+    await removeAIKey(ctx);
+    return "AI key removed. This workspace now uses the mock.";
   });
 }

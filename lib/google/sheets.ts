@@ -2,7 +2,7 @@
 // The Sheets permission is requested only when someone chooses "Google Sheet"
 // (see grantSheetsAccessAction); everyone else keeps the plain sign-in scopes.
 import { db } from "@/lib/db";
-import { decryptToken, encryptToken } from "@/lib/google/crypto";
+import { decryptSecret, encryptSecret, EncryptionConfigError } from "@/lib/crypto";
 
 export const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -43,17 +43,29 @@ type GoogleAccount = { provider: string; providerAccountId: string; access_token
 /**
  * Called on every Google sign-in: Auth.js doesn't update an existing Account's tokens,
  * so a later grant (e.g. adding Sheets access) would otherwise be lost.
- * The refresh token is encrypted; a sign-in without one keeps the stored one.
+ * The refresh token is encrypted; a sign-in without one keeps the stored one. Without
+ * ENCRYPTION_KEY the refresh token is dropped (never stored in plain text) and sign-in
+ * still succeeds; Sheets access then asks to be granted again once the key is set.
  */
 export async function saveGoogleGrant(account: GoogleAccount): Promise<void> {
   if (account.provider !== "google") return;
+  let refresh: { refresh_token: string | null } | object = {};
+  if (account.refresh_token) {
+    try {
+      refresh = { refresh_token: encryptSecret(account.refresh_token, "google-refresh-token") };
+    } catch (e) {
+      if (!(e instanceof EncryptionConfigError)) throw e;
+      console.warn(`Google refresh token not stored: ${e.message}`);
+      refresh = { refresh_token: null };
+    }
+  }
   await db.account.updateMany({
     where: { provider: "google", providerAccountId: account.providerAccountId },
     data: {
       access_token: account.access_token ?? null,
       expires_at: account.expires_at ?? null,
       scope: account.scope ?? null,
-      ...(account.refresh_token ? { refresh_token: encryptToken(account.refresh_token) } : {}),
+      ...refresh,
     },
   });
 }
@@ -70,7 +82,14 @@ export async function sheetsAccessToken(userId: string, fetchImpl: Fetch = fetch
   if (!acc) throw needsGrant();
   if (acc.access_token && acc.expires_at && acc.expires_at * 1000 > now + 60_000) return acc.access_token;
 
-  const refresh = decryptToken(acc.refresh_token);
+  let secret: { value: string | null; stale: boolean };
+  try {
+    secret = decryptSecret(acc.refresh_token, "google-refresh-token");
+  } catch (e) {
+    if (e instanceof EncryptionConfigError) throw new SheetsError(`The server can't read stored Google access. ${e.message}`, "failed");
+    throw e;
+  }
+  const refresh = secret.value;
   if (!refresh) throw needsGrant();
   const res = await fetchImpl(TOKEN_URL, {
     method: "POST",
@@ -93,7 +112,12 @@ export async function sheetsAccessToken(userId: string, fetchImpl: Fetch = fetch
   const t = (await res.json()) as { access_token: string; expires_in: number };
   await db.account.update({
     where: { provider_providerAccountId: { provider: "google", providerAccountId: acc.providerAccountId } },
-    data: { access_token: t.access_token, expires_at: Math.floor(now / 1000) + t.expires_in },
+    data: {
+      access_token: t.access_token,
+      expires_at: Math.floor(now / 1000) + t.expires_in,
+      // Tokens from before ENCRYPTION_KEY (or stored in plain text) are re-encrypted on first use.
+      ...(secret.stale ? { refresh_token: encryptSecret(refresh, "google-refresh-token") } : {}),
+    },
   });
   return t.access_token;
 }

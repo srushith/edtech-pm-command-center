@@ -8,6 +8,7 @@ import { TopBar } from "@/components/shell/top-bar";
 import { QuickAdd } from "@/components/records/quick-add";
 import { RecordSheet } from "@/components/records/record-sheet";
 import { hasRole } from "@/lib/auth/roles";
+import { describeAIMode, getAIMode } from "@/lib/ai/provider";
 import { listWorkspaces } from "@/lib/auth/access";
 import { requireUser, requireWorkspace } from "@/lib/auth/session";
 import { getFilterOptions } from "@/lib/data/filters";
@@ -17,9 +18,10 @@ import { getModeCookie } from "@/lib/mode-server";
 // (proxy.ts only does an optimistic cookie check).
 export default async function DashboardLayout({ children }: LayoutProps<"/">) {
   const [user, ctx] = await Promise.all([requireUser(), requireWorkspace()]);
-  const [filterOptions, workspaces, mode, cookieStore] = await Promise.all([
-    getFilterOptions(ctx), listWorkspaces(user.id), getModeCookie(), cookies(),
+  const [filterOptions, workspaces, mode, cookieStore, aiMode] = await Promise.all([
+    getFilterOptions(ctx), listWorkspaces(user.id), getModeCookie(), cookies(), getAIMode(ctx),
   ]);
+  const ai = { ...describeAIMode(aiMode), kind: aiMode.kind, canConfigure: ctx.role === "OWNER" };
   const sidebarOpen = cookieStore.get("sidebar_state")?.value !== "false";
 
   return (
@@ -31,7 +33,7 @@ export default async function DashboardLayout({ children }: LayoutProps<"/">) {
         </Suspense>
         <SidebarInset>
           <Suspense>
-            <TopBar filterOptions={filterOptions} />
+            <TopBar filterOptions={filterOptions} ai={ai} />
           </Suspense>
           <div className="flex-1">{children}</div>
         </SidebarInset>

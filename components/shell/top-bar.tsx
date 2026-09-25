@@ -1,7 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Search } from "lucide-react";
+import { AIModeChip } from "@/components/ai-mode-chip";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { Separator } from "@/components/ui/separator";
@@ -13,7 +15,9 @@ import { useShell } from "@/components/shell/shell-context";
 import { sectionForPath } from "@/lib/nav";
 import type { FilterOptions } from "@/lib/data/filters";
 
-export function TopBar({ filterOptions }: { filterOptions: FilterOptions }) {
+export type TopBarAI = { label: string; detail: string; kind: string; canConfigure: boolean };
+
+export function TopBar({ filterOptions, ai }: { filterOptions: FilterOptions; ai: TopBarAI }) {
   const pathname = usePathname();
   const section = sectionForPath(pathname);
   const { setPaletteOpen } = useShell();
@@ -35,6 +39,15 @@ export function TopBar({ filterOptions }: { filterOptions: FilterOptions }) {
             <span className="max-sm:hidden">Search…</span>
             <Kbd className="ml-auto max-sm:hidden">⌘K</Kbd>
           </Button>
+          {ai.canConfigure ? (
+            <Link href="/settings#ai" title={ai.detail} aria-label={`${ai.label}. ${ai.detail}`} className="max-sm:hidden">
+              <AIModeChip label={ai.label} kind={ai.kind} />
+            </Link>
+          ) : (
+            <span title={ai.detail} aria-label={`${ai.label}. ${ai.detail}`} className="max-sm:hidden">
+              <AIModeChip label={ai.label} kind={ai.kind} />
+            </span>
+          )}
           <ModeToggle />
           <ThemeToggle />
         </div>

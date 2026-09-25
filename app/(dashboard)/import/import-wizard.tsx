@@ -435,7 +435,9 @@ function MapStep({
         </table>
       </div>
 
-      {!help.ai && <p className="text-xs text-muted-foreground">AI suggestions aren&apos;t available in this workspace; map columns by hand.</p>}
+      {!help.ai && (
+        <p className="text-xs text-muted-foreground">{help.aiNote ?? "AI suggestions aren't available; map columns by hand."}</p>
+      )}
       {problems.length > 0 && (
         <ul className="space-y-0.5 text-xs text-red-400">{problems.map((p) => <li key={p}>{p}</li>)}</ul>
       )}

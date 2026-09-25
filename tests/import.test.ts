@@ -14,14 +14,13 @@ import { runIntegrityChecks } from "@/lib/data/integrity";
 import { saveRecord } from "@/lib/data/records";
 import { scopedDb } from "@/lib/data/scoped";
 import { getSearchIndex } from "@/lib/data/search";
-import { decryptToken, encryptToken } from "@/lib/google/crypto";
+import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { parseSheetLink, SHEETS_SCOPE, SheetsError, type Fetch } from "@/lib/google/sheets";
 import { exactMapping, headerSignature, importFields, mappingProblems } from "@/lib/import/mapping";
 import { normalizeDate } from "@/lib/import/normalize";
 import { parseCsv } from "@/lib/import/parse";
 import { ctx, makeUser, makeWorkspace, resetDb } from "./helpers";
 
-process.env.AUTH_SECRET ??= "test-secret-for-token-encryption";
 const NOW = new Date("2026-09-26T12:00:00Z");
 
 const csv = (text: string, name = "upload.csv"): ImportSourceInput => ({ kind: "CSV", name, ...parseCsv(text) });
@@ -94,10 +93,10 @@ describe("parsing and mapping (pure)", () => {
     assert.deepEqual(parseSheetLink(`https://docs.google.com/spreadsheets/d/${id}/edit#gid=42`), { spreadsheetId: id, sheetId: 42 });
     assert.deepEqual(parseSheetLink(`https://docs.google.com/spreadsheets/d/${id}/edit`), { spreadsheetId: id, sheetId: null });
     assert.equal(parseSheetLink("https://example.com/nope"), null);
-    const enc = encryptToken("refresh-123");
-    assert.ok(enc.startsWith("enc:v1:") && !enc.includes("refresh-123"));
-    assert.equal(decryptToken(enc), "refresh-123");
-    assert.equal(decryptToken(enc.slice(0, -4) + "AAAA"), null);
+    const enc = encryptSecret("refresh-123", "google-refresh-token");
+    assert.ok(enc.startsWith("enc:v2:") && !enc.includes("refresh-123"));
+    assert.equal(decryptSecret(enc, "google-refresh-token").value, "refresh-123");
+    assert.equal(decryptSecret(enc.slice(0, -4) + "AAAA", "google-refresh-token").value, null);
   });
 });
 
@@ -258,7 +257,7 @@ describe("Google Sheets (fake Google API)", () => {
     await db.account.create({
       data: {
         userId: editorUserId, type: "oidc", provider: "google", providerAccountId: "g-eli",
-        scope: `openid email profile ${SHEETS_SCOPE}`, refresh_token: encryptToken("r-eli"), access_token: null, expires_at: null,
+        scope: `openid email profile ${SHEETS_SCOPE}`, refresh_token: encryptSecret("r-eli", "google-refresh-token"), access_token: null, expires_at: null,
       },
     });
     values = [["Name", "Email", "Domain", "Company", "Hours per week", "Hiring stage"], ["Grace Hopper", "grace@x.test", "RAG & Retrieval", "Navy", 4, "Sourced"]];

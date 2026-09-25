@@ -3,13 +3,16 @@ import { StatusBadge } from "@/components/status-badge";
 import { requireWorkspace } from "@/lib/auth/session";
 import { ROLE_DESCRIPTIONS, ROLE_LABELS, ROLES } from "@/lib/auth/roles";
 import { getWorkspaceSettings } from "@/lib/data/workspaces";
+import { getAISettingsView } from "@/lib/data/ai-settings";
+import { ENCRYPTION_KEY_HELP } from "@/lib/crypto";
+import { AISettingsPanel } from "./ai-settings-panel";
 import { DemoDataPanel, InviteForm, InviteList, MemberList, RenameForm } from "./settings-forms";
 
 export const metadata: Metadata = { title: "Settings" };
 
-function Section({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
+function Section({ id, title, description, children }: { id?: string; title: string; description?: string; children: React.ReactNode }) {
   return (
-    <section className="space-y-3 border-t pt-6 first:border-t-0 first:pt-0">
+    <section id={id} className="scroll-mt-24 space-y-3 border-t pt-6 first:border-t-0 first:pt-0">
       <div>
         <h3 className="text-sm font-medium">{title}</h3>
         {description && <p className="text-xs text-muted-foreground">{description}</p>}
@@ -21,7 +24,7 @@ function Section({ title, description, children }: { title: string; description?
 
 export default async function SettingsPage() {
   const ctx = await requireWorkspace();
-  const s = await getWorkspaceSettings(ctx);
+  const [s, ai] = await Promise.all([getWorkspaceSettings(ctx), getAISettingsView(ctx)]);
   const isOwner = s.role === "OWNER";
 
   return (
@@ -58,6 +61,16 @@ export default async function SettingsPage() {
           <InviteList invites={s.invites} />
         </Section>
       )}
+
+      <Section
+        id="ai"
+        title="AI"
+        description={isOwner
+          ? "Use your own OpenAI, Gemini or Anthropic key for AI features in this workspace. Without a key, a built-in mock is used."
+          : "AI settings are managed by owners."}
+      >
+        <AISettingsPanel view={ai} encryptionHelp={ENCRYPTION_KEY_HELP} />
+      </Section>
 
       <Section
         title="Demo data"

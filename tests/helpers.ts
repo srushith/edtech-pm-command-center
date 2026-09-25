@@ -5,6 +5,10 @@ import { contextFor, type WorkspaceContext } from "@/lib/auth/access";
 import type { Role } from "@/lib/auth/roles";
 import { createWorkspace } from "@/lib/data/workspaces";
 
+// Tests don't depend on the developer's .env.local secrets.
+process.env.ENCRYPTION_KEY ||= Buffer.alloc(32, 7).toString("base64");
+process.env.AUTH_SECRET ||= "test-auth-secret";
+
 if (process.env.CC_TEST_DB !== "1") {
   throw new Error("Run tests with `npm test`: it targets DATABASE_URL_TEST, and these tests wipe their database.");
 }
