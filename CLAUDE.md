@@ -37,10 +37,29 @@ Seed must be deterministic and internally consistent (attendance <= learners,
 feedback counts plausible for cohort size, ratings match feedback sentiment).
 Courses: Agentic AI (US), Transformative GenAI (India), AI Engineering, PM, TPM, EM, SWE, FDE.
 
+## Sidebar sections (main nav, in this order)
+1. Command Center `/`
+2. Cohorts `/cohorts`
+3. Courses `/courses`
+4. Curriculum `/curriculum`
+5. Instructor / SME Hub `/talent`
+6. Class Health `/class-health`
+7. Learner Voice `/learner-voice`
+8. Launches `/launches`
+9. Projects & Capstones `/projects`
+10. Operations `/operations`
+11. AI Insights `/ai-insights`
+
+Data Integrity (`/data`) is not in the main nav. It lives in the sidebar footer and in ⌘K.
+`lib/nav.ts` is the single source for this list.
+
 ## Conventions
 - Feature folders under `app/(dashboard)/<section>`; shared UI in `components/`.
 - Data access only through `lib/data/*` functions, never directly in components.
-- Filters live in URL search params so views are shareable and saveable.
+- Filters live in URL search params so views are shareable and saveable
+  (`course`, `cohort`, `region`, `range` | `from`/`to`; parse with `lib/filters.ts`).
+- PM/Leadership mode: cookie `cc-mode` is the preference; `?mode=pm|leadership`
+  overrides it for that page view only and never writes the cookie (`lib/mode.ts`).
 - Run `npm run lint` and `npm run build` before declaring a phase done.
 
 ## Build phases (do one at a time, commit after each)

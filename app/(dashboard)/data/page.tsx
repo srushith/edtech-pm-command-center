@@ -30,9 +30,9 @@ export default async function DataPage() {
   });
 
   return (
-    <main className="mx-auto w-full max-w-6xl space-y-8 px-4 py-8 sm:px-6">
+    <div className="mx-auto w-full max-w-6xl space-y-8 px-4 py-8 sm:px-6">
       <header className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">Data integrity</h1>
+        <h2 className="text-xl font-semibold tracking-tight">Data integrity</h2>
         <p className="text-sm text-muted-foreground">
           Seed anchored to {anchor} · {totalRecords.toLocaleString()} records across{" "}
           {counts.length} entities · checked live against the database
@@ -170,6 +170,6 @@ export default async function DataPage() {
           </Table>
         </div>
       </section>
-    </main>
+    </div>
   );
 }
