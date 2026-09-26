@@ -1,49 +1,29 @@
 # EdTech PM Command Center
 
-An internal operating system for EdTech Product/Curriculum Managers running many
-courses, cohorts, instructors, SMEs and learner experiences. Multiple PMs use it, each
-in their own workspace(s) of courses; teammates join by invite with a role.
-This is an operational PM tool, NOT a BI dashboard. Optimize for decision speed:
-the PM should know what is healthy, broken, changed, at risk, and what to do next
-within 30 seconds.
+A multi-user operating system for EdTech Product/Curriculum Managers running courses,
+cohorts, instructors, SMEs and learner experiences. Each PM works in their own workspace
+and can invite colleagues. Demo user: Srushith.
+This is an operational PM tool, NOT a BI dashboard. Optimize for decision speed: a PM
+should know what is healthy, broken, changed, at risk, and what to do next within 30 seconds.
 
 ## Core product principle
 Every signal follows: Metric -> Signal -> Evidence -> Root Cause -> Action.
 - Never show a bare number. Show change vs previous period, the cause, and a next action.
-- Every important item has an action button (Review recording, Contact instructor,
-  Escalate to Ops, Assign owner, Mark resolved, etc.).
-- AI output is always labeled "AI Insight" (purple) with a "View evidence" link to
-  the underlying records. Never present AI conclusions as fact.
+- Every important item has an action (Review recording, Contact instructor, Escalate to
+  Ops, Assign owner, Mark resolved, etc.). Actions update the database and log an ActivityEvent.
+- AI output is always labeled "AI Insight" (purple) with "View evidence" linking to the
+  underlying records. Never present AI conclusions as fact.
 
-## Stack (all free / open source)
+## Stack (free / open source, except the AI provider)
 - Next.js (App Router) + TypeScript + Tailwind CSS + shadcn/ui
 - Recharts for charts, lucide-react for icons, cmdk (shadcn Command) for the palette
-- Prisma ORM with PostgreSQL (Neon free tier), schema changes via `prisma migrate`
+- Prisma + PostgreSQL on Neon (main branch = app, test branch = tests)
 - Auth.js (next-auth v5) with Google sign-in, JWT sessions, Prisma adapter
-- No paid services (no email sending: invites are pending records). AI runs through `lib/ai/provider.ts` with a single
-  interface so a real provider can be plugged in later.
+- AI through `lib/ai/provider.ts`: each workspace's own key (OpenAI default; Gemini and
+  Anthropic supported), mock provider when no key is set
+- No email sending: invites are pending records the invitee accepts by signing in.
 
-## Design rules
-- Dark-first, light mode optional. Thin borders, dense but readable, strong type.
-- Color is for status only: green healthy, yellow attention, red critical,
-  blue info/active, purple AI insight. No decorative gradients or colorful cards.
-- Feel: Linear / Vercel / Bloomberg density. Keyboard-first (⌘K, shortcuts).
-- Home hierarchy: attention -> what changed -> risk -> what's next -> portfolio -> analytics.
-
-## Data model (see prisma/schema.prisma)
-Accounts: User, Account (Auth.js), Workspace, Membership (OWNER | EDITOR | VIEWER), Invite.
-Domain: Course, Cohort, Instructor, SME, Module, Session, LearnerFeedback, Issue, Project,
-Launch, plus ModuleVersion, ChecklistItem, ActivityEvent (for "What changed").
-Every domain model has `workspaceId` and `isDemo`. Required parent links are composite
-foreign keys `[parentId, workspaceId]`, so the database rejects cross-workspace children;
-optional links are checked in lib/data and by /data's "Links stay inside the workspace".
-Demo data ("Start with demo data", `lib/demo/seed.ts`): 10 cohorts across 8 courses,
-20+ instructors, 30+ SMEs, 50+ sessions, 100+ feedback records, 20+ issues, 10+ modules,
-5+ launches. It must be deterministic and internally consistent (attendance <= learners,
-feedback counts plausible for cohort size, ratings match feedback sentiment).
-Courses: Agentic AI (US), Transformative GenAI (India), AI Engineering, PM, TPM, EM, SWE, FDE.
-
-## Sidebar sections (main nav, in this order)
+## Sidebar (in this order)
 1. Command Center `/`
 2. Cohorts `/cohorts`
 3. Courses `/courses`
@@ -56,23 +36,85 @@ Courses: Agentic AI (US), Transformative GenAI (India), AI Engineering, PM, TPM,
 10. Operations `/operations`
 11. AI Insights `/ai-insights`
 
-Data Integrity (`/data`) and Settings (`/settings`, with `/settings/trash`) are not in the main nav. They live in
-the sidebar footer and in ⌘K. The sidebar header is the workspace switcher.
+Data Integrity (`/data`) lives in the sidebar footer and in ⌘K, not the main nav.
+The account menu (Settings, Sign out) sits in the sidebar footer. It also shows the name, email,
+current workspace and role, and Trash for owners. Settings (`/settings`, with `/settings/trash`)
+is in ⌘K too. The sidebar header is the workspace switcher.
 `lib/nav.ts` is the single source for these lists. Outside the dashboard: `/signin`, `/onboarding`.
+
+## Modes
+PM mode: full operational detail, owners, tasks, actions.
+Leadership mode: health, satisfaction, launch status, major risks, trends, decisions needed;
+no owners, tasks or action buttons. Stored in a cookie; `?mode=pm|leadership` in the URL
+overrides it for that page view without changing the cookie.
+(Cookie `cc-mode`; resolved in `lib/mode.ts`.)
+
+## Design rules
+- Dark-first, light mode optional. Thin borders, dense but readable, strong type.
+- Color is for status only: green healthy, yellow attention, red critical,
+  blue info/active, purple AI insight. No decorative gradients or colorful cards.
+- Feel: Linear / Vercel / Bloomberg density. Keyboard-first (⌘K, C for quick add).
+- Home hierarchy: attention -> what changed -> risk -> what's next -> portfolio -> analytics.
+
+## Data
+Core entities: Course, Cohort, Instructor, SME, Module, Session, LearnerFeedback, Issue,
+Project, Launch, plus ModuleVersion, ChecklistItem, ActivityEvent, and account models
+User, Workspace, Membership, Invite.
+Added for the phases below: NpsSurvey (cohort, round NPS-1 or NPS-2, scheduled week,
+release date, responses, promoters, passives, detractors, score, comments) and
+ProjectSubmission (learner, project, cohort, submitted_at, grading status, grade, grader).
+SME records track hiring stage, stage dates, hire date (for "hired this quarter") and
+training status.
+
+Google Sheets are the team's existing source for cohorts, instructors, courses, modules,
+class ratings and upcoming cohorts. Data comes in through the importer (CSV or linked
+sheet, one-way "Sync now"). Imports reuse the same validation as the Add forms, update
+existing records instead of duplicating, and skip records the user has deleted.
+Demo data is created per workspace from onboarding and must stay internally consistent
+(attendance <= learners, feedback and NPS response counts plausible for cohort size,
+ratings consistent with feedback sentiment).
+
+Implementation (`prisma/schema.prisma`):
+- Also in the schema: Account (Auth.js), ImportSource, ImportRun, ImportLink, TrashBatch,
+  WorkspaceAISettings, AIUsageEvent.
+- Every domain model has `workspaceId`, `isDemo`, and `deletedAt`/`trashBatchId` for Trash.
+  Required parent links are composite foreign keys `[parentId, workspaceId]`, so the database
+  rejects cross-workspace children. Optional links are checked in lib/data and by /data's
+  "Links stay inside the workspace".
+- Demo data ("Start with demo data", `lib/demo/seed.ts`) is deterministic: 10 cohorts across
+  8 courses, 20+ instructors, 30+ SMEs, 50+ sessions, 100+ feedback records, 20+ issues,
+  10+ modules, 5+ launches. Courses: Agentic AI (US), Transformative GenAI (India),
+  AI Engineering, PM, TPM, EM, SWE, FDE.
+
+## Security and access rules (non-negotiable)
+- Every lib/data function filters by the current workspace. No query without workspaceId.
+- Roles: owner (members, settings, AI key, permanent delete), editor (add, edit, import,
+  move to Trash), viewer (read only). Enforce on the server, not only in the UI.
+- Sign-in is invite-only: ALLOWED_EMAILS admins, or users with an invite or membership.
+- Secrets live only in .env.local (gitignored); .env.example lists keys without values.
+- AI keys are encrypted with ENCRYPTION_KEY and never sent to the browser.
+- Deletes are soft (Trash, 30-day restore); deleted items vanish from pages, search,
+  counts and AI features.
 
 ## Conventions
 - Feature folders under `app/(dashboard)/<section>`; shared UI in `components/`.
-- Data access only through `lib/data/*` functions, never directly in components.
-- Workspaces and roles (non-negotiable):
+- Data access only through `lib/data/*`, never directly in components.
+- Filters live in URL search params so views are shareable and saveable
+  (`course`, `cohort`, `region`, `range` | `from`/`to`; parse with `lib/filters.ts`).
+- All numbers are computed from the database, never hard-coded.
+- Schema changes go through Prisma migrations: edit `prisma/schema.prisma`, then
+  `npm run db:migrate` and commit the migration.
+- Run `npm run lint`, `npm test` and `npm run build` before declaring a phase done.
+- Tests: `npm test` runs against `DATABASE_URL_TEST` only (it wipes that database).
+- Workspaces and roles:
   - Every page and server action gets its context from `requireWorkspace()` (`lib/auth/session.ts`);
     `proxy.ts` is only an optimistic cookie check, never the security boundary.
   - Every `lib/data` function takes a `WorkspaceContext` and reads/writes domain models only
     through `scopedDb(ctx)` (`lib/data/scoped.ts`): it filters by workspace, stamps creates, and
     blocks writes for viewers. Use flat inputs (no nested writes); no raw SQL on domain data.
   - Workspace/member/invite functions live in `lib/data/workspaces.ts` and check roles explicitly
-    (`requireRole`). Owner: settings, members, invites, clear demo data. Editor: edit records.
-    Viewer: read only. A workspace always keeps at least one owner.
-  - Sign-in is invite-only: `ALLOWED_EMAILS` admins, existing members, or a pending invite.
+    (`requireRole`). Owners also clear demo data and delete the workspace. A workspace always
+    keeps at least one owner. Deleting your own account deletes the workspaces you alone own.
   - The current workspace is the `cc-workspace` cookie, validated against memberships.
     Switching workspaces drops URL filters (codes belong to a workspace).
   - Any new data function needs a test in `tests/tenancy.test.ts` proving another workspace's
@@ -107,7 +149,8 @@ the sidebar footer and in ⌘K. The sidebar header is the workspace switcher.
   another record makes the row invalid rather than guessed. Blank cells keep existing values.
   Imports never delete. A linked sheet's rows remember their record (ImportLink); a row whose
   record was deleted in the app is skipped ("deleted in app"), even after purge. Sync uses the
-  clicking user's own Google grant; refresh tokens are encrypted at rest (`lib/google/crypto.ts`).
+  clicking user's own Google grant; refresh tokens are encrypted at rest with `lib/crypto.ts`
+  (see `lib/google/sheets.ts`).
 - AI goes through `getAIProvider(ctx)` in `lib/ai/provider.ts` only: it returns the workspace's
   real provider when an owner set a key, the mock when none is set, or null when AI is off
   (monthly limit reached, CC_AI=off, key unreadable). It logs every real request (feature,
@@ -120,46 +163,28 @@ the sidebar footer and in ⌘K. The sidebar header is the workspace switcher.
 - Secrets at rest use `lib/crypto.ts` (AES-256-GCM, ENCRYPTION_KEY, bound to a purpose). API keys
   are never returned to the browser: views carry only a masked last-4. Client components must not
   import lib/crypto, lib/ai/provider(s) or lib/data/ai-settings (a test checks this).
-- Secrets only in `.env.local` (gitignored via `.env*`); `.env.example` lists every key, no values.
-- Schema changes: edit `prisma/schema.prisma`, then `npm run db:migrate` and commit the migration.
-- Tests: `npm test` runs against `DATABASE_URL_TEST` only (it wipes that database).
-- Filters live in URL search params so views are shareable and saveable
-  (`course`, `cohort`, `region`, `range` | `from`/`to`; parse with `lib/filters.ts`).
-- PM/Leadership mode: cookie `cc-mode` is the preference; `?mode=pm|leadership`
-  overrides it for that page view only and never writes the cookie (`lib/mode.ts`).
-- Run `npm run lint`, `npm test` and `npm run build` before declaring a phase done.
 
-## Build phases (do one at a time, commit after each)
-1. Foundation: schema, seed, app shell, theme, ⌘K, global filters, mode toggle, /data integrity page
-1.5. Accounts, workspaces and your own data
-   - Part A: PostgreSQL; Google sign-in (Auth.js), invite-only, every page requires login;
-     User/Workspace/Membership/Invite with owner/editor/viewer roles; workspaceId on every
-     entity and role checks in every lib/data function, with isolation tests; workspace
-     switcher; onboarding (create workspace, demo data or empty); Settings (rename, members,
-     invites, roles, remove, clear demo data); secrets in .env.local
-   - Part B: create/edit forms (side sheet, zod validation, consistency rules) for Courses,
-     Cohorts, Launches, Modules, Instructors, SMEs, Projects, Issues, Sessions (rating and
-     attendance) and Learner feedback; Add on each section page, Edit in tables and from ⌘K;
-     Quick add (C); ActivityEvent on every save; ⌘K reloads after saves; viewers get no
-     Add/Edit and the server enforces the role
-   - Part C: AI settings per workspace (owners edit): provider (OpenAI default, Gemini, Anthropic),
-     API key encrypted with ENCRYPTION_KEY and shown masked, model, "Test key"; lib/ai/provider.ts
-     uses the workspace key or the mock; per-workspace usage log (requests, tokens) in Settings;
-     optional monthly request limit (AI off when reached); AI mode chip in the header
-   - Part D: import for Courses, Cohorts, Instructors, SMEs, Modules from CSV or Google Sheets
-     (read-only Sheets permission requested only when chosen); column mapping by hand, with
-     AI suggestions via lib/ai/provider.ts; preview of new/updated/unchanged/invalid rows using
-     the Add forms' validation; match by name (code/email guard); saved mappings; one-way
-     "Sync now" for linked sheets; one ActivityEvent per import; editors and owners only
-   - Part E: account menu (sidebar footer); soft delete to Trash for every record type with dependents
-     preview, typed confirmation, bulk delete and Undo; owner-only Trash page (restore, delete forever,
-     empty, 30-day expiry); synced sheets skip deleted records; delete workspace (owners) and delete
-     your own account (deletes workspaces you alone own)
-2. Command Center home: attention queue, what changed, risk radar, portfolio health, daily brief
-3. Class Health + Learner Voice: low-rated detection, "Why?" drill-down, feedback clusters, sentiment
-4. Cohorts, timeline (collision warnings), launches, launch checklists
-5. Instructor/SME hub: hiring pipeline kanban, profiles, matching engine, performance cards
-6. Curriculum: roadmap, kanban/timeline with bottleneck detection, version history
-7. Projects & capstones, issue tracker, issue intelligence (pattern clustering)
+## Build phases (one at a time, commit and push after each)
+1. DONE. Foundation: schema, app shell, theme, ⌘K search, global filters, mode toggle, /data
+1.5 Accounts, workspaces and your own data
+   A. DONE. Postgres, Google sign-in, workspaces, roles, invites, onboarding, isolation tests
+   B. DONE. Add and edit forms for every entity, quick add
+   C. DONE. AI settings per workspace (encrypted key, test key, usage log, monthly limit)
+   D. DONE. Import from CSV or Google Sheet link, column mapping, preview, saved mappings, Sync now
+   E. DONE. Account menu and sign out, soft delete with Trash, bulk delete, delete workspace/account
+2. Command Center home: attention queue, what changed, risk radar, portfolio health,
+   daily brief
+3. Class Health + Learner Voice: low-rated class detection from the synced Google Sheet
+   ratings (configurable threshold), "Why?" drill-down, learner feedback, feedback themes,
+   sentiment by course, cohort, module, instructor and week
+4. Cohorts: cohort health and progress, new launches driven by the upcoming cohorts sheet,
+   NPS-1 and NPS-2 schedule per cohort (which week each is released, whether it is live,
+   response rate, score and trend between rounds)
+5. Instructor / SME Hub: SMEs hired this quarter, SMEs in the hiring pipeline by stage,
+   SMEs in the training phase, with owners and next actions
+6. Curriculum: detailed module view (objectives, sessions, owner, SME, status, version,
+   resources, linked projects, feedback and ratings for the module)
+7. Projects: cohort-wise submissions from learners, projects pending grading (with age),
+   and graded projects, with completion rate per cohort and project
 8. AI layer: copilot with cited records, PM Memory, what-if simulator, weekly review export
-9. Polish: notifications, saved views, responsive, run the 10 design-test workflows
+9. Polish: notifications, saved views, responsive layouts, run the 10 design-test workflows
