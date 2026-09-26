@@ -248,8 +248,8 @@ posts to it the way a form would (CSRF token, then `/api/auth/callback/test-logi
 | Import a CSV of courses: map, preview, import, see the row in Courses | Pass | Pass | Pass ("Importing is for editors and owners") |
 | Invite a colleague from Settings | Pass | n/a | n/a |
 | Sign out → `/signin`; `/` stays signed out | Pass | Pass | Pass |
-| No console errors | **Fail: E2E-3** (E2E-2 fixed) | **Fail: E2E-3** (E2E-2 fixed) | Pass |
-| No uncaught page errors | **Fail: E2E-3** | **Fail: E2E-3** | Pass |
+| No console errors | Pass (E2E-2, E2E-3 fixed) | Pass (E2E-2, E2E-3 fixed) | Pass |
+| No uncaught page errors | Pass (E2E-3 fixed) | Pass (E2E-3 fixed) | Pass |
 
 **Responsive smoke** (`e2e/responsive.spec.ts`), as layout@e2e.test (owner of Shared programs), at 1440, 1024, 768 and 390px:
 no main section, `/data`, `/settings` or `/import` may scroll sideways or log a console or page error (checked per page,
@@ -267,6 +267,16 @@ with the last result reachable by scrolling the list.
 | ⌘K palette fully on screen, 500px high; list scrolls | Pass | Pass | Pass | Pass |
 | One sidebar toggle, no hydration errors | Pass | Pass | Pass | Pass (E2E-7 fixed) |
 
+**Shell hydration** (`e2e/shell-hydration.spec.ts`), as layout@e2e.test: load `/courses?region=US&mode=leadership` and
+click Import at once, before the shell (sidebar, top bar) has hydrated; five rounds, since it's a race.
+
+| Check | Result |
+|---|---|
+| No "Hydration failed" or other console/page error | Pass (E2E-3 fixed; fails on the old code) |
+| Then the shell shows the new page: title "Import", filters cleared, PM mode, sidebar links without `?region`, no section highlighted | Pass |
+
+Journeys plus shell hydration, run 10 times in a row after the E2E-3 fix (fresh test database each time): 10/10 passed.
+
 **Edit forms** (`e2e/edit-forms.spec.ts`), as lead@e2e.test and layout@e2e.test in Shared programs:
 
 | Check | Result |
@@ -280,13 +290,13 @@ Checks marked Fail are soft assertions: the run keeps going and lists all of the
 
 ### Bugs found by the end-to-end run
 
-Fixed: E2E-1, E2E-2, E2E-4, E2E-5, E2E-6, E2E-7. Open: E2E-3, E2E-8.
+Fixed: E2E-1, E2E-2, E2E-3, E2E-4, E2E-5, E2E-6, E2E-7. Open: E2E-8.
 
 | # | Bug | Seen | Where to look |
 |---|---|---|---|
 | E2E-1 (**fixed**) | After saving an edit, reopening Edit on the same record shows the **old** values (the form isn't reloaded). Saving again from that form would silently undo the first edit. | Every run, owner and editor | `components/records/record-sheet.tsx`: the loaded form is kept per `type:id`, so reopening renders the stale copy, and `RecordForm` (same `key`) keeps its initial state when fresh data arrives. Fixed: each opening loads fresh values, and saves carry the form's `rowVersion` (stale saves are refused) |
 | E2E-2 (**fixed**) | Console error on `/cohorts`, `/courses`, `/curriculum`, `/talent`, `/import` for editors and owners: "Base UI: A component that acts as a button expected a native `<button>` because the `nativeButton` prop is true". Links rendered through `<Button render={<Link/>}>` lose native link semantics (accessibility). | Every run | `components/records/records-panel.tsx` (Import link), `app/(dashboard)/import/import-wizard.tsx` ("View …" link). Fixed: `ButtonLink` in `components/ui/button.tsx` renders a Next `<Link>` with button styles (a real `<a>`); used for Import, "View …" and the import sources' links |
-| E2E-3 | "Hydration failed" on `/import` during the CSV import step: the server rendered the top-bar title "Courses", the client "Import". | At least 3 of 7 owner/editor runs before E2E-2 was fixed; every run since (Import is now a plain link, so the click lands sooner) | `components/shell/top-bar.tsx` (title from `usePathname`), the Import link from `/courses`. Cause: the journey clicks Import straight after loading `/courses`; the client router moves to `/import` while the top bar's Suspense boundary still holds the server HTML ("Courses"), so it hydrates against the new path |
+| E2E-3 (**fixed**) | "Hydration failed" on `/import` during the CSV import step: the server rendered the top-bar title "Courses", the client "Import". | At least 3 of 7 owner/editor runs before E2E-2 was fixed; every run since (Import is now a plain link, so the click lands sooner) | `components/shell/top-bar.tsx` (title from `usePathname`), the Import link from `/courses`. Cause: the journey clicks Import straight after loading `/courses`; the client router moves to `/import` while the top bar's Suspense boundary still holds the server HTML ("Courses"), so it hydrates against the new path. The sidebar (nav hrefs carrying filters, highlight), filter bar and mode toggle had the same race. Fixed: `proxy.ts` forwards the requested path and query in a header; the layout passes it to `ShellProvider`, and `useShellLocation()` (`components/shell/shell-context.tsx`) returns it while hydrating, then the live router location. The shell reads the address only through it |
 | E2E-4 (**fixed**) | Pages scroll sideways at 1024px (`/cohorts`, `/talent`, `/class-health`, `/learner-voice`, `/launches`, `/projects`, `/operations`, up to 1152px wide) and on every page at 768px (up to 1024px wide). The main area (`main[data-slot=sidebar-inset]`) grows to fit its widest child instead of shrinking beside the sidebar, so the tables' own horizontal scroll never kicks in. | Every run | `components/ui/sidebar.tsx` `SidebarInset` (a flex item without `min-w-0`). Fixed: `min-w-0`; every table sits in its own `overflow-x-auto` container |
 | E2E-5 (**fixed**) | Phone width: after you pick a section in the sidebar sheet, the sheet stays open over the new page. | Every run | `components/shell/app-sidebar.tsx` (nav links don't close the mobile sheet). Fixed: nav links, Settings, Trash and Workspace settings close the sheet |
 | E2E-6 (**fixed**) | The ⌘K palette runs off the bottom of the screen with its default list (bottom edge at 912px in a 900px-high window at 1440; 860px in 844px at 390), so the footer hints are cut off. | Every run | `components/shell/command-palette.tsx`, `components/ui/command.tsx` (dialog placed from the top, with a 60vh list). Fixed: the dialog is capped to the window (`max-h: 100dvh` minus its top offset), input and footer don't shrink, the list does and scrolls |
