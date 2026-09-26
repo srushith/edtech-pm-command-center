@@ -94,6 +94,8 @@ Entry points: section "Add" button, row Edit, ⌘K "New X…", Quick add (C), re
 |---|---|---|---|---|---|
 | 5.1 | Load form (options, existing values; other workspace's id → error) | `loadRecordForm` | O, E | no (action) | Not run |
 | 5.2 | Save valid record, each type | `saveRecordAction` → `saveRecord` | O, E | yes (records, lib level; e2e adds and edits a cohort through the sheet) | Not run |
+| 5.2a | Edit form loads the record's current values every time it opens (and on Reload) | `record-sheet.tsx`, `loadRecordForm` | O, E | yes (e2e edit-forms: edit, save, reopen, edit again, both stick) | Pass |
+| 5.2b | Stale edit blocked: a form whose record changed since it opened can't save ("This record was updated since you opened it", Reload); check and write are one conditional update on `rowVersion` | `saveRecord`, `persistRecord`, `record-form.tsx` | O, E | yes (records: stale refused and not logged, two racing saves → one wins, versionless writes and cleared links bump the version, other workspace can't; e2e edit-forms: two users) | Pass |
 | 5.3 | Viewer can't create/edit (server) | `saveRecordAction`, `loadRecordForm` | — | partial (lib level; e2e: viewer gets no Add/Edit/Delete/Quick add) | Not run |
 | 5.4 | Cohort needs a course from this workspace | `lib/records/cohort.ts` | O, E | yes (records) | Not run |
 | 5.5 | Invalid / out-of-order dates rejected | record schemas | O, E | yes (records) | Not run |
@@ -241,7 +243,7 @@ posts to it the way a form would (CSRF token, then `/api/auth/callback/test-logi
 | C opens Quick add | Pass | Pass | Pass (nothing opens) |
 | Add a cohort | Pass | Pass | Pass (no Add button) |
 | Edit it (name, learners); table updates | Pass | Pass | Pass (no Edit buttons) |
-| Reopening Edit shows the saved values | **Fail: E2E-1** | **Fail: E2E-1** | n/a |
+| Reopening Edit shows the saved values | Pass (E2E-1 fixed) | Pass (E2E-1 fixed) | n/a |
 | Delete it → Trash toast; Undo restores it | Pass | Pass | Pass (no Delete buttons or checkboxes) |
 | Import a CSV of courses: map, preview, import, see the row in Courses | Pass | Pass | Pass ("Importing is for editors and owners") |
 | Invite a colleague from Settings | Pass | n/a | n/a |
@@ -261,13 +263,24 @@ in view and navigate (below 768px it's a sheet behind "Toggle Sidebar"); ⌘K mu
 | ⌘K palette fully on screen | **Fail: E2E-6** | **Fail: E2E-6** | **Fail: E2E-6** | **Fail: E2E-6** |
 | No hydration errors | Pass | Pass | Pass | **Fail: E2E-7** |
 
+**Edit forms** (`e2e/edit-forms.spec.ts`), as lead@e2e.test and layout@e2e.test in Shared programs:
+
+| Check | Result |
+|---|---|
+| Add a cohort; edit its name and save; reopen: the new name shows; change learners and save; after a full page reload the form shows both changes | Pass |
+| Two people open the same cohort; B saves first; A's save is refused with "This record was updated since you opened it", the form stays open and B's change stands; Reload shows B's values; A saves again on top | Pass |
+
+These check only for uncaught page errors: the console errors on the same pages are E2E-2, reported by the journeys.
+
 Checks marked Fail are soft assertions: the run keeps going and lists all of them, and the test still fails.
 
-### Bugs found by the end-to-end run (not fixed)
+### Bugs found by the end-to-end run
+
+Fixed: E2E-1. The rest are open.
 
 | # | Bug | Seen | Where to look |
 |---|---|---|---|
-| E2E-1 | After saving an edit, reopening Edit on the same record shows the **old** values (the form isn't reloaded). Saving again from that form would silently undo the first edit. | Every run, owner and editor | `components/records/record-sheet.tsx`: the loaded form is kept per `type:id`, so reopening renders the stale copy, and `RecordForm` (same `key`) keeps its initial state when fresh data arrives |
+| E2E-1 (**fixed**) | After saving an edit, reopening Edit on the same record shows the **old** values (the form isn't reloaded). Saving again from that form would silently undo the first edit. | Every run, owner and editor | `components/records/record-sheet.tsx`: the loaded form is kept per `type:id`, so reopening renders the stale copy, and `RecordForm` (same `key`) keeps its initial state when fresh data arrives. Fixed: each opening loads fresh values, and saves carry the form's `rowVersion` (stale saves are refused) |
 | E2E-2 | Console error on `/cohorts`, `/courses`, `/curriculum`, `/talent`, `/import` for editors and owners: "Base UI: A component that acts as a button expected a native `<button>` because the `nativeButton` prop is true". Links rendered through `<Button render={<Link/>}>` lose native link semantics (accessibility). | Every run | `components/records/records-panel.tsx` (Import link), `app/(dashboard)/import/import-wizard.tsx` ("View …" link) |
 | E2E-3 | "Hydration failed" on `/import` during the CSV import step: the server rendered the top-bar title "Courses", the client "Import". | At least 3 of 7 owner/editor runs that reached the import step; not reproduced in isolation | `components/shell/top-bar.tsx` (title from `usePathname`), the Import link from `/courses` |
 | E2E-4 | Pages scroll sideways at 1024px (`/cohorts`, `/talent`, `/class-health`, `/learner-voice`, `/launches`, `/projects`, `/operations`, up to 1152px wide) and on every page at 768px (up to 1024px wide). The main area (`main[data-slot=sidebar-inset]`) grows to fit its widest child instead of shrinking beside the sidebar, so the tables' own horizontal scroll never kicks in. | Every run | `components/ui/sidebar.tsx` `SidebarInset` (a flex item without `min-w-0`) |

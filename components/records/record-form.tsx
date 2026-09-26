@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState, useTransition } from "react";
-import { Loader2, Lock, Trash2 } from "lucide-react";
+import { Loader2, Lock, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
@@ -62,6 +62,7 @@ export function RecordForm({
   options,
   onSaved,
   onCancel,
+  onReload,
 }: {
   type: EntityType;
   id: string | null;
@@ -70,6 +71,8 @@ export function RecordForm({
   options: FormOptions;
   onSaved: (r: Extract<SaveResult, { ok: true }>) => void;
   onCancel: () => void;
+  /** Load the record's current values again (after a conflict). Unsaved changes here are dropped. */
+  onReload: () => void;
 }) {
   const def = RECORDS[type];
   const { requestDelete } = useShell();
@@ -77,6 +80,9 @@ export function RecordForm({
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const [attempted, setAttempted] = useState(false);
   const [serverErrors, setServerErrors] = useState<FieldErrors>({});
+  // Someone saved this record after the form loaded it: the server refused to overwrite that.
+  // Stays up until Reload: saving again would hit the same conflict.
+  const [stale, setStale] = useState<string | null>(null);
   const [saving, startSaving] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -98,9 +104,13 @@ export function RecordForm({
       return;
     }
     startSaving(async () => {
-      const r = await saveRecordAction(type, id, submittedValues(type, values, options));
+      const version = id ? Number(existing?._version) : undefined;
+      const r = await saveRecordAction(type, id, submittedValues(type, values, options), version);
       if (r.ok) onSaved(r);
-      else setServerErrors(r.errors);
+      else {
+        setServerErrors(r.errors);
+        if (r.stale) setStale(r.errors._form ?? null);
+      }
     });
   };
 
@@ -143,7 +153,16 @@ export function RecordForm({
             <Trash2 /> Delete
           </Button>
         )}
-        {formError && <p role="alert" className="mr-auto text-xs text-red-400">{formError}</p>}
+        {stale ? (
+          <p role="alert" className="mr-auto flex flex-wrap items-center gap-2 text-xs text-amber-400">
+            {stale}
+            <Button type="button" size="xs" variant="outline" onClick={onReload} title="Load the latest values. Your changes in this form are discarded.">
+              <RotateCcw /> Reload
+            </Button>
+          </p>
+        ) : (
+          formError && <p role="alert" className="mr-auto text-xs text-red-400">{formError}</p>
+        )}
         {!formError && attempted && Object.keys(clientErrors).length > 0 && (
           <p className="mr-auto text-xs text-red-400">Fix the highlighted fields.</p>
         )}

@@ -30,12 +30,14 @@ export async function loadRecordForm(type: string, id: string | null): Promise<R
   return { ok: true, values, options, now: new Date().toISOString() };
 }
 
-export async function saveRecordAction(type: string, id: string | null, values: Values): Promise<SaveResult> {
+/** Edits send the rowVersion their form loaded (`_version`), so a stale form can't overwrite newer changes. */
+export async function saveRecordAction(type: string, id: string | null, values: Values, expectedVersion?: number): Promise<SaveResult> {
   if (!isRecordType(type)) return { ok: false, errors: { _form: "Unknown record type." } };
+  if (id && !Number.isInteger(expectedVersion)) return { ok: false, errors: { _form: "Reload the form and try again." } };
   const ctx = await requireWorkspace();
   try {
     await purgeExpiredTrash(ctx); // frees codes held by items older than 30 days
-    const result = await saveRecord(ctx, type, id, values);
+    const result = await saveRecord(ctx, type, id, values, new Date(), { expectedVersion: id ? expectedVersion : undefined });
     if (result.ok) revalidatePath("/", "layout"); // tables, filters and ⌘K pick it up
     return result;
   } catch (e) {

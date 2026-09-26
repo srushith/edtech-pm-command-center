@@ -7,6 +7,8 @@
 //   4. server-only rules (uniqueness, existing children that constrain an edit);
 //   5. one transaction: the write, derived values (ratings, cohort status, checklist)
 //      and an ActivityEvent for "What changed".
+// Edits carry the rowVersion their form loaded; the update only applies while the row is still
+// at that version, so a stale form can't overwrite a newer change (STALE_RECORD).
 import { requireRole, type WorkspaceContext } from "@/lib/auth/access";
 import { AccessError } from "@/lib/auth/roles";
 import { scopedDb, withTrash } from "@/lib/data/scoped";
@@ -32,10 +34,16 @@ type Delegate = {
   create(a: object): Promise<Row>;
   createMany(a: object): Promise<{ count: number }>;
   update(a: object): Promise<Row>;
+  updateMany(a: object): Promise<{ count: number }>;
 };
 const model = (client: object, name: string) => (client as Record<string, Delegate>)[name];
 
-export type SaveResult = { ok: true; id: string; label: string } | { ok: false; errors: FieldErrors };
+export type SaveResult = { ok: true; id: string; label: string } | { ok: false; errors: FieldErrors; stale?: true };
+
+export const STALE_RECORD = "This record was updated since you opened it.";
+
+/** The record changed after the edit form loaded it (its rowVersion moved on). */
+class StaleRecordError extends Error {}
 
 // ---------- Options the forms pick from (and the checks look up) ----------
 
@@ -326,7 +334,7 @@ function describeChanges(type: EntityType, before: Values, after: Values, o: For
 export async function getRecordForEdit(ctx: WorkspaceContext, type: EntityType, id: string): Promise<Values | null> {
   const h = HANDLERS[type];
   const row = await model(scopedDb(ctx), h.model).findUnique({ where: { id } });
-  return row ? { ...h.toValues(row), _id: row.id, _instructorId: str(row.instructorId) } : null;
+  return row ? { ...h.toValues(row), _id: row.id, _instructorId: str(row.instructorId), _version: String(row.rowVersion) } : null;
 }
 
 /** Shared lookups for validating one record or a whole import batch. */
@@ -368,23 +376,33 @@ export async function validateRecord(
   return { ok: true, data, existing, before };
 }
 
-/** Write a validated record inside the caller's transaction, with derived values. Optionally logs its own ActivityEvent. */
+/**
+ * Write a validated record inside the caller's transaction, with derived values. Optionally logs its
+ * own ActivityEvent. Every update bumps rowVersion; with `expectedVersion` the update applies only
+ * while the row is still at that version (checked and written in one statement), else StaleRecordError.
+ */
 export async function persistRecord(
   tx: Tx,
   ctx: WorkspaceContext,
   type: EntityType,
   v: Extract<Validated, { ok: true }>,
   vc: ValidationContext,
-  opts: { logActivity: boolean },
+  opts: { logActivity: boolean; expectedVersion?: number },
 ): Promise<Row> {
   const def = RECORDS[type];
   const h = HANDLERS[type];
   const { data, existing, before } = v;
   const toWrite = await h.toData(data, { lookup: vc.lookup, now: vc.now, db: tx, existing });
   const m = model(tx, h.model);
-  const saved = existing
-    ? await m.update({ where: { id: existing.id }, data: toWrite })
-    : await m.create({ data: { ...toWrite, workspaceId: ctx.workspace.id } });
+  let saved: Row;
+  if (!existing) {
+    saved = await m.create({ data: { ...toWrite, workspaceId: ctx.workspace.id } });
+  } else {
+    const where = { id: existing.id, ...(opts.expectedVersion === undefined ? {} : { rowVersion: opts.expectedVersion }) };
+    const { count } = await m.updateMany({ where, data: { ...toWrite, rowVersion: { increment: 1 } } });
+    if (count === 0) throw new StaleRecordError(STALE_RECORD);
+    saved = (await m.findUnique({ where: { id: existing.id } }))!;
+  }
   await h.after?.(tx, saved, existing, ctx);
   if (!opts.logActivity) return saved;
 
@@ -420,20 +438,29 @@ export async function saveRecord(
   id: string | null,
   values: Values,
   now = new Date(),
+  /** Edit forms: the rowVersion the form loaded. Omitted: last write wins (imports, Mark inactive). */
+  opts: { expectedVersion?: number } = {},
 ): Promise<SaveResult> {
   requireRole(ctx, "EDITOR", "Adding and editing records");
   const h = HANDLERS[type];
   const db = scopedDb(ctx);
   const existing = id ? await model(db, h.model).findUnique({ where: { id } }) : null;
   if (id && !existing) return { ok: false, errors: { _form: "That record doesn't exist in this workspace." } };
+  const stale: SaveResult = { ok: false, errors: { _form: STALE_RECORD }, stale: true };
+  // Early answer; persistRecord re-checks atomically in case a save lands in between.
+  if (existing && opts.expectedVersion !== undefined && existing.rowVersion !== opts.expectedVersion) return stale;
 
   const vc = await validationContext(ctx, now);
   const v = await validateRecord(ctx, type, existing, values, vc);
   if (!v.ok) return v;
   try {
-    const row = await db.$transaction((tx) => persistRecord(tx, ctx, type, v, vc, { logActivity: true }), { timeout: 20_000 });
+    const row = await db.$transaction(
+      (tx) => persistRecord(tx, ctx, type, v, vc, { logActivity: true, expectedVersion: opts.expectedVersion }),
+      { timeout: 20_000 },
+    );
     return { ok: true, id: row.id, label: h.display(row) };
   } catch (e) {
+    if (e instanceof StaleRecordError) return stale;
     // A concurrent save can still hit a unique constraint after our checks passed.
     if (isUniqueViolation(e)) {
       return { ok: false, errors: { _form: "Another record with the same code or email was just saved. Change it and try again." } };

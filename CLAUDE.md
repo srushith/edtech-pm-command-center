@@ -126,6 +126,9 @@ Implementation (`prisma/schema.prisma`):
   - Server-only rules (uniqueness, existing children that constrain an edit) live in the type's
     handler in `lib/data/records.ts`, as do derived values (ratings, cohort status, checklists).
   - Every save logs an ActivityEvent (created / updated / status_changed) in the same transaction.
+  - Edit forms load fresh values on every open and save with the `rowVersion` they loaded; the update
+    applies only at that version, else "This record was updated since you opened it" (Reload). Every other
+    write of form-editable fields bumps `rowVersion` (persistRecord does; ad-hoc updateMany must too).
   - Derived fields are never form inputs: sentiment, learnerId, issue code, cohort status, module
     order, instructor rating, and session rating once the session has feedback.
   - "Now" is the wall clock for user rows and DEMO_TODAY for demo rows (`nowFor` in lib/domain/time.ts).

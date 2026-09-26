@@ -266,7 +266,10 @@ export async function deleteRecords(
       for (const [m, rows] of p.rows) {
         await model(tx, m).updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { deletedAt: now, trashBatchId: batch.id } });
       }
-      for (const u of p.unlinks) await model(tx, u.model).updateMany({ where: { id: { in: u.ids } }, data: { [u.field]: null } });
+      // Link fields show in edit forms: bump rowVersion so a form opened before this can't save the old link back.
+      for (const u of p.unlinks) {
+        await model(tx, u.model).updateMany({ where: { id: { in: u.ids } }, data: { [u.field]: null, rowVersion: { increment: 1 } } });
+      }
 
       // Ratings: sessions that lost feedback, and instructors whose sessions left.
       const goneSessions = new Set((p.rows.get("session") ?? []).map((s) => s.id));
@@ -322,7 +325,7 @@ async function restoreBatch(tx: object, ctx: WorkspaceContext, batch: Batch, now
   // Put cleared links back where the target is live again and nobody re-linked the row since.
   for (const u of (batch.unlinks as Unlink[]) ?? []) {
     if (!(await model(tx, u.target).findFirst({ where: { id: u.value } }))) continue;
-    await model(tx, u.model).updateMany({ where: { id: { in: u.ids }, [u.field]: null }, data: { [u.field]: u.value } });
+    await model(tx, u.model).updateMany({ where: { id: { in: u.ids }, [u.field]: null }, data: { [u.field]: u.value, rowVersion: { increment: 1 } } });
   }
   const sessionIds = (rows.get("learnerFeedback") ?? []).map((f) => String(f.sessionId));
   const instructorIds = (rows.get("session") ?? []).map((s) => String(s.instructorId));

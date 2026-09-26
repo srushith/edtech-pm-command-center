@@ -8,24 +8,34 @@ import { useShell } from "@/components/shell/shell-context";
 import { RecordForm } from "@/components/records/record-form";
 import { RECORDS } from "@/lib/records/registry";
 import { loadRecordForm, type RecordFormData } from "@/app/(dashboard)/records/actions";
+import type { RecordFormTarget } from "@/components/shell/shell-context";
 import type { EntityType } from "@/lib/search-types";
 
-/** The one create/edit sheet, opened from Add/Edit buttons, Quick add (C) and ⌘K. */
+/**
+ * The one create/edit sheet, opened from Add/Edit buttons, Quick add (C) and ⌘K. Every opening
+ * (and Reload) fetches the record's current values; nothing is reused from an earlier opening.
+ */
 export function RecordSheet() {
   const router = useRouter();
   const { recordForm, closeRecordForm, invalidateSearch, openRecordForm } = useShell();
-  const [data, setData] = useState<{ key: string; form: RecordFormData } | null>(null);
+  // Each load belongs to one opening (the recordForm object) and one reload count; a form shows
+  // only once its own load has arrived, and remounts for it.
+  const [reloads, setReloads] = useState(0);
+  const [data, setData] = useState<{ target: RecordFormTarget; reload: number; form: RecordFormData } | null>(null);
   const [, startLoading] = useTransition();
   const [saved, setSaved] = useState<{ type: EntityType; id: string; label: string; created: boolean } | null>(null);
 
-  const key = recordForm ? `${recordForm.type}:${recordForm.id ?? "new"}` : null;
   useEffect(() => {
-    if (!recordForm || !key) return;
+    if (!recordForm) return;
+    let current = true;
     startLoading(async () => {
       const form = await loadRecordForm(recordForm.type, recordForm.id);
-      setData({ key, form });
+      if (current) setData({ target: recordForm, reload: reloads, form });
     });
-  }, [recordForm, key]);
+    return () => {
+      current = false;
+    };
+  }, [recordForm, reloads]);
 
   useEffect(() => {
     if (!saved) return;
@@ -33,9 +43,12 @@ export function RecordSheet() {
     return () => window.clearTimeout(t);
   }, [saved]);
 
-  const ready = data && data.key === key ? data.form : null;
-  const def = recordForm ? RECORDS[recordForm.type] : null;
-  const editing = !!recordForm?.id;
+  // While closing, keep showing the last form so the sheet doesn't flash "Loading…" as it slides out.
+  const shown = data && (!recordForm || (data.target === recordForm && data.reload === reloads)) ? data : null;
+  const ready = shown?.form ?? null;
+  const target = recordForm ?? shown?.target ?? null;
+  const def = target ? RECORDS[target.type] : null;
+  const editing = !!target?.id;
 
   return (
     <>
@@ -55,15 +68,16 @@ export function RecordSheet() {
             <p role="alert" className="mx-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">{ready.error}</p>
           ) : (
             <RecordForm
-              key={key}
-              type={recordForm!.type}
-              id={recordForm!.id}
+              key={`${target!.type}:${target!.id ?? "new"}:${shown!.reload}`}
+              type={target!.type}
+              id={target!.id}
               existing={ready.values}
               initial={ready.values ?? def!.defaults?.(ready.options, new Date(ready.now)) ?? {}}
               options={ready.options}
               onCancel={closeRecordForm}
+              onReload={() => setReloads((n) => n + 1)}
               onSaved={(r) => {
-                setSaved({ type: recordForm!.type, id: r.id, label: r.label, created: !editing });
+                setSaved({ type: target!.type, id: r.id, label: r.label, created: !editing });
                 closeRecordForm();
                 invalidateSearch();
                 router.refresh();

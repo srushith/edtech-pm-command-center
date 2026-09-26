@@ -8,6 +8,7 @@ import { AccessError } from "@/lib/auth/roles";
 import { runIntegrityChecks } from "@/lib/data/integrity";
 import { getRecordForEdit, saveRecord, type SaveResult } from "@/lib/data/records";
 import { scopedDb } from "@/lib/data/scoped";
+import { deleteRecords } from "@/lib/data/trash";
 import { getSearchIndex } from "@/lib/data/search";
 import type { Values } from "@/lib/records/kit";
 import { RECORDS, RECORD_TYPES } from "@/lib/records/registry";
@@ -231,6 +232,81 @@ describe("activity log and search", () => {
       assert.ok(index.some((i) => i.type === type && i.id === id), `${type} ${id} missing from search`);
     }
     assert.ok(index.some((i) => i.label === "RAG-C1"));
+  });
+});
+
+describe("edit conflicts (rowVersion)", () => {
+  const edit = (c: WorkspaceContext, id: string, values: Values, expectedVersion?: number) =>
+    saveRecord(c, "course", id, values, NOW, { expectedVersion });
+  const current = async (id: string) => (await getRecordForEdit(owner, "course", id))!;
+  const isStale = (r: SaveResult) => {
+    fails(r, "_form", /^This record was updated since you opened it\.$/);
+    assert.equal((r as { stale?: true }).stale, true);
+  };
+
+  test("an edit form's version must still be current, and each save moves it on", async () => {
+    const id = ok(await save(owner, "course", course({ code: "VER", name: "Versioned course" })));
+    const formA = await current(id);
+    const formB = await current(id); // a second form, opened at the same time
+    assert.equal(formA._version, "0");
+
+    ok(await edit(owner, id, { ...formA, name: "First edit" }, Number(formA._version)));
+    assert.equal((await current(id)).name, "First edit");
+    assert.equal((await current(id))._version, "1");
+
+    // Form B still holds version 0: refused, nothing written, nothing logged.
+    const events = await db.activityEvent.count({ where: { entityId: id } });
+    isStale(await edit(editor, id, { ...formB, name: "Stale edit" }, Number(formB._version)));
+    assert.equal((await current(id)).name, "First edit");
+    assert.equal(await db.activityEvent.count({ where: { entityId: id } }), events);
+
+    // Reloaded, form B saves on top of the first edit.
+    const reloaded = await current(id);
+    ok(await edit(editor, id, { ...reloaded, track: "Search" }, Number(reloaded._version)));
+    const final = await current(id);
+    assert.deepEqual([final.name, final.track, final._version], ["First edit", "Search", "2"]);
+  });
+
+  test("of two saves from the same version, exactly one wins", async () => {
+    const id = ok(await save(owner, "course", course({ code: "RACE", name: "Race course" })));
+    const form = await current(id);
+    const results = await Promise.all([
+      edit(owner, id, { ...form, name: "Race A" }, 0),
+      edit(editor, id, { ...form, name: "Race B" }, 0),
+    ]);
+    assert.equal(results.filter((r) => r.ok).length, 1, JSON.stringify(results));
+    isStale(results.find((r) => !r.ok)!);
+    assert.equal((await current(id))._version, "1");
+  });
+
+  test("writes without a version (imports, Mark inactive) still move it on, so open forms notice", async () => {
+    const id = ok(await save(owner, "course", course({ code: "IMPV", name: "Imported course" })));
+    const form = await current(id);
+    ok(await edit(owner, id, { ...form, track: "Changed by an import" }));
+    assert.equal((await current(id))._version, "1");
+    isStale(await edit(editor, id, { ...form, name: "Stale" }, 0));
+  });
+
+  test("clearing a link on delete moves the linking record's version on", async () => {
+    const smeId = ok(await save(owner, "sme", {
+      name: "Rhea Reviewer", email: "rhea@versions.test", domain: "RAG", company: "Acme", hoursPerWeek: "4", hiringStage: "ACTIVE",
+    }));
+    const mod = (await getRecordForEdit(owner, "module", moduleId))!;
+    ok(await saveRecord(owner, "module", moduleId, { ...mod, reviewerId: smeId }, NOW, { expectedVersion: Number(mod._version) }));
+    const form = (await getRecordForEdit(owner, "module", moduleId))!;
+    await deleteRecords(owner, "sme", [smeId], null, NOW);
+    const after = (await getRecordForEdit(owner, "module", moduleId))!;
+    assert.equal(after.reviewerId, "");
+    assert.equal(Number(after._version), Number(form._version) + 1);
+    const r = await saveRecord(owner, "module", moduleId, form, NOW, { expectedVersion: Number(form._version) });
+    assert.equal((r as { stale?: true }).stale, true);
+  });
+
+  test("another workspace can't edit the record, even with the right version", async () => {
+    const id = ok(await save(owner, "course", course({ code: "ISOV", name: "Isolated course" })));
+    const form = await current(id);
+    fails(await saveRecord(other, "course", id, { ...form, name: "Hijacked" }, NOW, { expectedVersion: 0 }), "_form", /doesn't exist/);
+    assert.equal((await current(id)).name, "Isolated course");
   });
 });
 
