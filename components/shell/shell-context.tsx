@@ -9,6 +9,8 @@ import type { EntityType } from "@/lib/search-types";
 const ONE_YEAR = 60 * 60 * 24 * 365;
 
 export type RecordFormTarget = { type: EntityType; id: string | null };
+/** Records to delete (one, or a bulk selection); onDeleted runs after they're in Trash. */
+export type DeleteRequest = { type: EntityType; ids: string[]; onDeleted?: () => void };
 
 type ShellContext = {
   cookieMode: Mode;
@@ -25,6 +27,10 @@ type ShellContext = {
   /** Bumped after every save so the ⌘K index reloads. */
   searchVersion: number;
   invalidateSearch: () => void;
+  /** Opens the delete dialog (editors and owners). */
+  deleteRequest: DeleteRequest | null;
+  requestDelete: (req: DeleteRequest) => void;
+  closeDeleteRequest: () => void;
 };
 
 const Ctx = createContext<ShellContext | null>(null);
@@ -44,6 +50,7 @@ export function ShellProvider({
   const [recordForm, setRecordForm] = useState<RecordFormTarget | null>(null);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [searchVersion, setSearchVersion] = useState(0);
+  const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(null);
   const openRecordForm = useCallback(
     (type: EntityType, id: string | null = null) => {
       if (!canEdit) return;
@@ -55,6 +62,15 @@ export function ShellProvider({
   );
   const closeRecordForm = useCallback(() => setRecordForm(null), []);
   const invalidateSearch = useCallback(() => setSearchVersion((v) => v + 1), []);
+  const requestDelete = useCallback(
+    (req: DeleteRequest) => {
+      if (!canEdit || req.ids.length === 0) return;
+      setPaletteOpen(false);
+      setDeleteRequest(req);
+    },
+    [canEdit],
+  );
+  const closeDeleteRequest = useCallback(() => setDeleteRequest(null), []);
 
   const setMode = useCallback(
     (mode: Mode) => {
@@ -75,8 +91,12 @@ export function ShellProvider({
     () => ({
       cookieMode, setMode, paletteOpen, setPaletteOpen, canEdit,
       recordForm, openRecordForm, closeRecordForm, quickAddOpen, setQuickAddOpen, searchVersion, invalidateSearch,
+      deleteRequest, requestDelete, closeDeleteRequest,
     }),
-    [cookieMode, setMode, paletteOpen, canEdit, recordForm, openRecordForm, closeRecordForm, quickAddOpen, searchVersion, invalidateSearch],
+    [
+      cookieMode, setMode, paletteOpen, canEdit, recordForm, openRecordForm, closeRecordForm, quickAddOpen, searchVersion, invalidateSearch,
+      deleteRequest, requestDelete, closeDeleteRequest,
+    ],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

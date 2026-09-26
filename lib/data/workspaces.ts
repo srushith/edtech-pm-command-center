@@ -4,6 +4,8 @@ import { db } from "@/lib/db";
 import { INVITE_TTL_DAYS, normalizeEmail, requireRole, type WorkspaceContext } from "@/lib/auth/access";
 import { AccessError, type Role } from "@/lib/auth/roles";
 import { seedDemoData } from "@/lib/demo/seed";
+import { deleteAllDomainRows, dropEmptyTrashBatches } from "@/lib/data/trash";
+import { revokeGoogleGrant, type Fetch } from "@/lib/google/sheets";
 
 const NAME_MAX = 60;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -155,8 +157,91 @@ export async function clearDemoData(ctx: WorkspaceContext): Promise<number> {
     async (tx) => {
       let total = 0;
       for (const [m, where] of demoFilters(ctx.workspace.id)) total += (await delegate(tx, m).deleteMany({ where })).count;
+      await dropEmptyTrashBatches(tx, ctx.workspace.id);
       return total;
     },
     { timeout: 60_000 },
   );
+}
+
+// ---------- Deleting a workspace or an account ----------
+
+const sameText = (a: string, b: string) => a.trim().replace(/\s+/g, " ").toLowerCase() === b.trim().replace(/\s+/g, " ").toLowerCase();
+
+type Tx = Parameters<Parameters<typeof db.$transaction>[0]>[0];
+
+/** Everything in the workspace, children first (required foreign keys are RESTRICT), then the workspace. */
+async function hardDeleteWorkspace(tx: Tx, workspaceId: string) {
+  await deleteAllDomainRows(tx, workspaceId);
+  await tx.workspace.delete({ where: { id: workspaceId } }); // cascades members, invites, imports, AI settings, Trash
+}
+
+/**
+ * Owners: permanently delete the workspace and all its data. Not recoverable, so the owner
+ * types its name. The workspace's own activity log goes with it; the server log keeps a line.
+ */
+export async function deleteWorkspace(ctx: WorkspaceContext, confirmName: string) {
+  requireRole(ctx, "OWNER", "Deleting the workspace");
+  if (!sameText(confirmName, ctx.workspace.name)) throw new AccessError(`Type the workspace name (${ctx.workspace.name}) to confirm.`);
+  await db.$transaction((tx) => hardDeleteWorkspace(tx, ctx.workspace.id), { timeout: 120_000 });
+  console.info(`[delete] ${ctx.user.email} deleted workspace ${ctx.workspace.id} ("${ctx.workspace.name}")`);
+}
+
+export type AccountDeletionPlan = {
+  /** Workspaces where you're the only owner: deleted with your account. */
+  deletes: { id: string; name: string; otherMembers: number }[];
+  /** Workspaces you just leave (someone else owns them too, or you aren't an owner). */
+  leaves: { id: string; name: string }[];
+};
+
+/** What deleting this user's account would do to their workspaces. */
+export async function planAccountDeletion(userId: string, client: Pick<Tx, "membership"> = db): Promise<AccountDeletionPlan> {
+  const memberships = await client.membership.findMany({
+    where: { userId },
+    select: { role: true, workspace: { select: { id: true, name: true, memberships: { select: { role: true } } } } },
+    orderBy: { createdAt: "asc" },
+  });
+  const plan: AccountDeletionPlan = { deletes: [], leaves: [] };
+  for (const m of memberships) {
+    const w = m.workspace;
+    const owners = w.memberships.filter((x) => x.role === "OWNER").length;
+    if (m.role === "OWNER" && owners === 1) plan.deletes.push({ id: w.id, name: w.name, otherMembers: w.memberships.length - 1 });
+    else plan.leaves.push({ id: w.id, name: w.name });
+  }
+  return plan;
+}
+
+/**
+ * Delete your own account: workspaces where you're the only owner are deleted, you leave
+ * the others (logged there), pending invites to your address go, and your Google grant is
+ * revoked. You type your email to confirm. Afterwards the session no longer resolves a user.
+ */
+export async function deleteAccount(userId: string, confirmEmail: string, opts: { fetchImpl?: Fetch; now?: Date } = {}) {
+  const user = await db.user.findUnique({ where: { id: userId } });
+  if (!user) throw new AccessError("That account doesn't exist.");
+  if (normalizeEmail(confirmEmail) !== normalizeEmail(user.email)) throw new AccessError(`Type your email (${user.email}) to confirm.`);
+  const now = opts.now ?? new Date();
+  const actor = user.name ?? user.email;
+  await revokeGoogleGrant(userId, opts.fetchImpl);
+  const plan = await db.$transaction(
+    async (tx) => {
+      // Planned inside the transaction, so a co-owner leaving meanwhile can't strand a workspace.
+      const p = await planAccountDeletion(userId, tx);
+      for (const w of p.deletes) await hardDeleteWorkspace(tx, w.id);
+      for (const w of p.leaves) {
+        await tx.activityEvent.create({
+          data: {
+            workspaceId: w.id, entityType: "Member", entityId: userId, action: "member_left",
+            summary: `${actor} deleted their account and left the workspace`, actorName: actor, createdAt: now,
+          },
+        });
+      }
+      await tx.invite.deleteMany({ where: { email: normalizeEmail(user.email) } });
+      await tx.user.delete({ where: { id: userId } }); // cascades Google accounts, memberships, invites sent
+      return p;
+    },
+    { timeout: 120_000 },
+  );
+  console.info(`[delete] ${user.email} deleted their account; workspaces deleted: ${plan.deletes.map((w) => w.id).join(", ") || "none"}`);
+  return plan;
 }

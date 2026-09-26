@@ -1,6 +1,6 @@
 "use client";
 
-import { Pencil, Plus } from "lucide-react";
+import { Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useShell } from "@/components/shell/shell-context";
 import { RECORDS } from "@/lib/records/registry";
@@ -24,6 +24,23 @@ export function EditRecordButton({ type, id, label }: { type: EntityType; id: st
   return (
     <Button size="xs" variant="ghost" aria-label={label ? `Edit ${label}` : "Edit"} onClick={() => openRecordForm(type, id)}>
       <Pencil /> Edit
+    </Button>
+  );
+}
+
+export function DeleteRecordButton({ type, id, label, onDeleted }: { type: EntityType; id: string; label?: string; onDeleted?: () => void }) {
+  const { requestDelete, canEdit } = useShell();
+  if (!canEdit) return null;
+  return (
+    <Button
+      size="icon-xs"
+      variant="ghost"
+      aria-label={label ? `Delete ${label}` : "Delete"}
+      title="Delete"
+      className="text-muted-foreground hover:text-red-400"
+      onClick={() => requestDelete({ type, ids: [id], onDeleted })}
+    >
+      <Trash2 />
     </Button>
   );
 }

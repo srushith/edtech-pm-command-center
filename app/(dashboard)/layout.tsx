@@ -7,6 +7,7 @@ import { ShellProvider } from "@/components/shell/shell-context";
 import { TopBar } from "@/components/shell/top-bar";
 import { QuickAdd } from "@/components/records/quick-add";
 import { RecordSheet } from "@/components/records/record-sheet";
+import { DeleteDialog } from "@/components/records/delete-dialog";
 import { hasRole } from "@/lib/auth/roles";
 import { describeAIMode, getAIMode } from "@/lib/ai/provider";
 import { listWorkspaces } from "@/lib/auth/access";
@@ -41,6 +42,7 @@ export default async function DashboardLayout({ children }: LayoutProps<"/">) {
           <CommandPalette />
         </Suspense>
         <RecordSheet />
+        <DeleteDialog />
         <QuickAdd />
       </SidebarProvider>
     </ShellProvider>

@@ -8,7 +8,8 @@
 //   5. one transaction: the write, derived values (ratings, cohort status, checklist)
 //      and an ActivityEvent for "What changed".
 import { requireRole, type WorkspaceContext } from "@/lib/auth/access";
-import { scopedDb } from "@/lib/data/scoped";
+import { AccessError } from "@/lib/auth/roles";
+import { scopedDb, withTrash } from "@/lib/data/scoped";
 import { mean, round2, sentimentForRating } from "@/lib/domain/feedback";
 import { CHECKLIST_TEMPLATE } from "@/lib/demo/fixtures";
 import { parseFilters, type FilterState } from "@/lib/filters";
@@ -52,7 +53,7 @@ export async function getFormOptions(ctx: WorkspaceContext): Promise<FormOptions
     db.session.findMany({
       select: {
         id: true, title: true, cohortId: true, status: true, scheduledAt: true, attendance: true, instructorId: true,
-        _count: { select: { feedback: true } },
+        _count: { select: { feedback: { where: { deletedAt: null } } } }, // nested counts aren't scoped
       },
       orderBy: { scheduledAt: "desc" },
     }),
@@ -87,9 +88,11 @@ const dateVal = (v: unknown) => (v instanceof Date ? isoDate(v) : "");
 const dateTimeVal = (v: unknown) => (v instanceof Date ? v.toISOString() : "");
 const pick = (row: Row, keys: string[]) => Object.fromEntries(keys.map((k) => [k, str(row[k])]));
 
+// Codes and emails stay reserved while their record is in Trash (restoring it must not clash).
 async function unique(db: ReturnType<typeof scopedDb>, m: string, field: string, value: unknown, existing: Row | null, message: string) {
-  const clash = await model(db, m).findFirst({ where: { [field]: value, ...(existing ? { NOT: { id: existing.id } } : {}) } });
-  return clash ? { [field]: message } : {};
+  const clash = await model(db, m).findFirst({ where: { [field]: value, ...withTrash, ...(existing ? { NOT: { id: existing.id } } : {}) } });
+  if (!clash) return {};
+  return { [field]: clash.deletedAt ? `${String(value)} belongs to a record in Trash: restore it, or delete it forever to reuse this.` : message };
 }
 
 function cohortStatus(start: Date, end: Date, now: Date) {
@@ -98,12 +101,20 @@ function cohortStatus(start: Date, end: Date, now: Date) {
   return "ACTIVE";
 }
 
-/** Session avgRating = mean of its feedback when it has any (else keep the manual value); then the instructor's mean. */
-async function recomputeRatings(tx: Tx, sessionIds: (string | null | undefined)[], instructorIds: (string | null | undefined)[]) {
+/**
+ * Session avgRating = mean of its feedback when it has any (else keep the manual value, or
+ * clear it with `clearEmpty` when its feedback was just deleted); then the instructor's mean.
+ */
+export async function recomputeRatings(
+  tx: Tx,
+  sessionIds: (string | null | undefined)[],
+  instructorIds: (string | null | undefined)[],
+  opts: { clearEmpty?: boolean } = {},
+) {
   for (const id of new Set(sessionIds.filter(Boolean) as string[])) {
     const ratings = (await tx.learnerFeedback.findMany({ where: { sessionId: id }, select: { rating: true } })).map((f) => f.rating);
-    if (ratings.length) {
-      const s = await tx.session.update({ where: { id }, data: { avgRating: round2(mean(ratings)!) }, select: { instructorId: true } });
+    if (ratings.length || opts.clearEmpty) {
+      const s = await tx.session.update({ where: { id }, data: { avgRating: ratings.length ? round2(mean(ratings)!) : null }, select: { instructorId: true } });
       instructorIds.push(s.instructorId);
     }
   }
@@ -180,7 +191,8 @@ const HANDLERS: Record<EntityType, Handler> = {
     },
     async toData(d, { db, existing }) {
       if (existing && existing.courseId === d.courseId) return { ...d, updatedAt: new Date() };
-      const max = await db.module.aggregate({ where: { courseId: d.courseId as string }, _max: { order: true } });
+      // Trashed modules keep their slot, so a restore can't collide.
+      const max = await db.module.aggregate({ where: { courseId: d.courseId as string, ...withTrash }, _max: { order: true } });
       return { ...d, order: (max._max.order ?? 0) + 1, updatedAt: new Date() };
     },
   },
@@ -224,9 +236,10 @@ const HANDLERS: Record<EntityType, Handler> = {
       if (!session) return { sessionId: "That session doesn't exist in this workspace." };
       const learnerId = `${session.cohort.code}-L${String(d.learnerNumber).padStart(3, "0")}`;
       const dup = await db.learnerFeedback.findFirst({
-        where: { sessionId: d.sessionId as string, learnerId, ...(ex ? { NOT: { id: ex.id } } : {}) },
+        where: { sessionId: d.sessionId as string, learnerId, ...withTrash, ...(ex ? { NOT: { id: ex.id } } : {}) },
       });
-      return dup ? { learnerNumber: `Learner ${learnerId} already left feedback on this session.` } : {};
+      if (!dup) return {};
+      return { learnerNumber: dup.deletedAt ? `Learner ${learnerId}'s feedback on this session is in Trash: restore it instead.` : `Learner ${learnerId} already left feedback on this session.` };
     },
     toData(d, { lookup }) {
       const session = lookup.session(d.sessionId as string)!;
@@ -257,7 +270,7 @@ const HANDLERS: Record<EntityType, Handler> = {
       const courseId = (d.courseId as string | null) ?? lookup.cohort(cohortId)?.courseId ?? null;
       const out: Data = { ...d, cohortId, courseId, resolvedAt: d.status === "RESOLVED" ? d.resolvedAt : null };
       if (!existing) {
-        const codes = await db.issue.findMany({ select: { code: true } });
+        const codes = await db.issue.findMany({ where: withTrash, select: { code: true } });
         const max = Math.max(100, ...codes.map((c) => Number(c.code.match(/^ISS-(\d+)$/)?.[1] ?? 0)));
         out.code = `ISS-${max + 1}`;
       }
@@ -427,6 +440,24 @@ export async function saveRecord(
     }
     throw e;
   }
+}
+
+/**
+ * The alternative to deleting an instructor who has sessions: set them inactive. Their
+ * sessions, ratings and feedback stay; inactive instructors aren't offered for new sessions.
+ */
+export async function setInstructorsInactive(ctx: WorkspaceContext, ids: string[], now = new Date()): Promise<number> {
+  requireRole(ctx, "EDITOR", "Editing records");
+  let changed = 0;
+  for (const id of [...new Set(ids)]) {
+    const values = await getRecordForEdit(ctx, "instructor", id);
+    if (!values) throw new AccessError("That instructor doesn't exist in this workspace.");
+    if (values.hiringStage === "INACTIVE") continue;
+    const r = await saveRecord(ctx, "instructor", id, { ...values, hiringStage: "INACTIVE" }, now);
+    if (!r.ok) throw new AccessError(Object.values(r.errors)[0] ?? "Couldn't update the instructor.");
+    changed++;
+  }
+  return changed;
 }
 
 /** Every record of a type as form values (for import matching and diffs). */

@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { LogOut } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { Building2, LogOut, Settings, Trash2 } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -18,6 +18,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -26,6 +27,7 @@ import {
 import { DATA_SECTION, SECTIONS, SETTINGS_SECTION, sectionForPath, type Section } from "@/lib/nav";
 import { MODE_LABELS } from "@/lib/mode";
 import type { WorkspaceSummary } from "@/lib/auth/access";
+import { ROLE_LABELS } from "@/lib/auth/roles";
 import { useHrefWithFilters, useMode } from "@/components/shell/shell-context";
 import { WorkspaceSwitcher } from "@/components/shell/workspace-switcher";
 import { signOutAction } from "@/app/(dashboard)/actions";
@@ -59,7 +61,9 @@ export function AppSidebar({
   currentWorkspaceId: string;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
   const current = sectionForPath(pathname);
+  const workspace = workspaces.find((w) => w.id === currentWorkspaceId);
   const { mode } = useMode();
   const displayName = user.name ?? user.email;
 
@@ -102,8 +106,31 @@ export function AppSidebar({
                   <span className="truncate text-[11px] text-muted-foreground">{MODE_LABELS[mode]} view</span>
                 </div>
               </DropdownMenuTrigger>
-              <DropdownMenuContent className="min-w-56" side="top" align="start">
-                <DropdownMenuLabel className="truncate">{user.email}</DropdownMenuLabel>
+              <DropdownMenuContent className="min-w-60" side="top" align="start">
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel className="space-y-0.5 py-1.5 font-normal">
+                    <span className="block truncate text-sm font-medium text-foreground">{user.name ?? user.email}</span>
+                    {user.name && <span className="block truncate text-xs">{user.email}</span>}
+                  </DropdownMenuLabel>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+                {workspace && (
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="flex items-center gap-2 font-normal">
+                      <Building2 className="size-3.5 shrink-0" />
+                      <span className="min-w-0 flex-1 truncate text-foreground">{workspace.name}</span>
+                      <span className="text-[11px]">{ROLE_LABELS[workspace.role]}</span>
+                    </DropdownMenuLabel>
+                  </DropdownMenuGroup>
+                )}
+                <DropdownMenuItem onClick={() => router.push(SETTINGS_SECTION.href)}>
+                  <Settings /> Settings
+                </DropdownMenuItem>
+                {workspace?.role === "OWNER" && (
+                  <DropdownMenuItem onClick={() => router.push("/settings/trash")}>
+                    <Trash2 /> Trash
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => signOutAction()}>
                   <LogOut /> Sign out

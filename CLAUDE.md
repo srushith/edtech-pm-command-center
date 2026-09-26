@@ -56,7 +56,7 @@ Courses: Agentic AI (US), Transformative GenAI (India), AI Engineering, PM, TPM,
 10. Operations `/operations`
 11. AI Insights `/ai-insights`
 
-Data Integrity (`/data`) and Settings (`/settings`) are not in the main nav. They live in
+Data Integrity (`/data`) and Settings (`/settings`, with `/settings/trash`) are not in the main nav. They live in
 the sidebar footer and in ⌘K. The sidebar header is the workspace switcher.
 `lib/nav.ts` is the single source for these lists. Outside the dashboard: `/signin`, `/onboarding`.
 
@@ -87,12 +87,27 @@ the sidebar footer and in ⌘K. The sidebar header is the workspace switcher.
   - Derived fields are never form inputs: sentiment, learnerId, issue code, cohort status, module
     order, instructor rating, and session rating once the session has feedback.
   - "Now" is the wall clock for user rows and DEMO_TODAY for demo rows (`nowFor` in lib/domain/time.ts).
+- Deletes are soft (`lib/data/trash.ts`), never ad-hoc Prisma deletes on domain rows:
+  - `deleteRecords()` moves a record and everything that requires it to Trash as one TrashBatch
+    (`deletedAt` + `trashBatchId`), clears optional links to it (remembered for restore), recomputes
+    derived values and logs a `deleted` ActivityEvent. A preview lists what goes; if anything else
+    goes, the user types the record's name (the count for bulk). Instructors with sessions can't be
+    deleted: offer Mark inactive.
+  - `scopedDb` hides trashed rows from every read and write. A query sees them only by naming
+    `deletedAt` in its top-level `where` (`withTrash` / `onlyTrash`): trash.ts, and uniqueness/numbering
+    checks (codes and emails stay reserved while in Trash). Nested `_count`/to-many reads need
+    `where: { deletedAt: null }` by hand. A live row never has a trashed required parent.
+  - Editors delete; the deleter can Undo for 2 minutes. Owners restore, delete forever or empty the
+    Trash (`/settings/trash`). Batches are purged after 30 days, lazily (no cron). Every step logs.
+  - New domain models get `deletedAt`/`trashBatchId`, an entry in SOFT_DELETE_MODELS and in the
+    trash.ts link maps, and new record types a Delete in their table.
 - Imports (`lib/data/imports.ts`) validate every row with `validateRecord` (the Add form's rules)
   and write with `persistRecord` in one transaction; never a separate import-only schema.
   Rows match existing records by name (modules: title within course); a code/email belonging to
   another record makes the row invalid rather than guessed. Blank cells keep existing values.
-  Imports never delete. Sync uses the clicking user's own Google grant; refresh tokens are
-  encrypted at rest (`lib/google/crypto.ts`).
+  Imports never delete. A linked sheet's rows remember their record (ImportLink); a row whose
+  record was deleted in the app is skipped ("deleted in app"), even after purge. Sync uses the
+  clicking user's own Google grant; refresh tokens are encrypted at rest (`lib/google/crypto.ts`).
 - AI goes through `getAIProvider(ctx)` in `lib/ai/provider.ts` only: it returns the workspace's
   real provider when an owner set a key, the mock when none is set, or null when AI is off
   (monthly limit reached, CC_AI=off, key unreadable). It logs every real request (feature,
@@ -136,6 +151,10 @@ the sidebar footer and in ⌘K. The sidebar header is the workspace switcher.
      AI suggestions via lib/ai/provider.ts; preview of new/updated/unchanged/invalid rows using
      the Add forms' validation; match by name (code/email guard); saved mappings; one-way
      "Sync now" for linked sheets; one ActivityEvent per import; editors and owners only
+   - Part E: account menu (sidebar footer); soft delete to Trash for every record type with dependents
+     preview, typed confirmation, bulk delete and Undo; owner-only Trash page (restore, delete forever,
+     empty, 30-day expiry); synced sheets skip deleted records; delete workspace (owners) and delete
+     your own account (deletes workspaces you alone own)
 2. Command Center home: attention queue, what changed, risk radar, portfolio health, daily brief
 3. Class Health + Learner Voice: low-rated detection, "Why?" drill-down, feedback clusters, sentiment
 4. Cohorts, timeline (collision warnings), launches, launch checklists

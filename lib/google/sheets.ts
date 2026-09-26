@@ -6,6 +6,7 @@ import { decryptSecret, encryptSecret, EncryptionConfigError } from "@/lib/crypt
 
 export const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
+const REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets";
 const MAX_ROWS = 2000;
 
@@ -120,6 +121,32 @@ export async function sheetsAccessToken(userId: string, fetchImpl: Fetch = fetch
     },
   });
   return t.access_token;
+}
+
+/**
+ * Best effort, when an account is deleted: ask Google to revoke this app's grant (refresh
+ * token, else access token). Failures are ignored; the stored tokens are deleted either way.
+ */
+export async function revokeGoogleGrant(userId: string, fetchImpl: Fetch = fetch): Promise<boolean> {
+  const acc = await db.account.findFirst({ where: { userId, provider: "google" } });
+  if (!acc) return false;
+  let token = acc.access_token;
+  try {
+    token = decryptSecret(acc.refresh_token, "google-refresh-token").value ?? token;
+  } catch {
+    // Unreadable refresh token (no ENCRYPTION_KEY): fall back to the access token.
+  }
+  if (!token) return false;
+  try {
+    const res = await fetchImpl(REVOKE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 // ---------- Reading ----------

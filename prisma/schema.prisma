@@ -5,6 +5,11 @@
 // so the database rejects a child that points into another workspace. Optional
 // links can't (Prisma requires all-or-nothing optionality); lib/data enforces those
 // and /data checks them. isDemo marks rows created by "Start with demo data".
+//
+// Trash: deletedAt is set while a domain row is in Trash, and trashBatchId names the
+// TrashBatch (one delete) it went with. scopedDb hides trashed rows from every read and
+// write. A live row never has a trashed required parent: deleting moves the whole subtree,
+// and restoring waits for the parent (see lib/data/trash.ts).
 
 generator client {
   provider = "prisma-client"
@@ -178,6 +183,8 @@ model Workspace {
   importRuns     ImportRun[]
   aiSettings     WorkspaceAISettings?
   aiUsage        AIUsageEvent[]
+  trashBatches   TrashBatch[]
+  importLinks    ImportLink[]
 }
 
 model Membership {
@@ -213,17 +220,19 @@ model Invite {
 // ---------- Core entities ----------
 
 model Course {
-  id          String       @id @default(cuid())
-  workspaceId String
-  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  isDemo      Boolean      @default(false)
-  code        String
-  name        String
-  region      Region
-  track       String
-  description String
-  status      CourseStatus
-  createdAt   DateTime     @default(now())
+  id           String       @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo       Boolean      @default(false)
+  deletedAt    DateTime?
+  trashBatchId String?
+  code         String
+  name         String
+  region       Region
+  track        String
+  description  String
+  status       CourseStatus
+  createdAt    DateTime     @default(now())
 
   cohorts  Cohort[]
   modules  Module[]
@@ -234,6 +243,7 @@ model Course {
   @@unique([id, workspaceId])
   @@unique([workspaceId, code])
   @@index([workspaceId])
+  @@index([trashBatchId])
 }
 
 model Cohort {
@@ -241,6 +251,8 @@ model Cohort {
   workspaceId      String
   workspace        Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   isDemo           Boolean      @default(false)
+  deletedAt        DateTime?
+  trashBatchId     String?
   code             String
   name             String
   courseId         String
@@ -262,26 +274,30 @@ model Cohort {
   @@unique([workspaceId, code])
   @@index([courseId])
   @@index([workspaceId])
+  @@index([trashBatchId])
 }
 
 model Instructor {
-  id          String      @id @default(cuid())
-  workspaceId String
-  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  isDemo      Boolean     @default(false)
-  name        String
-  email       String
-  expertise   String // comma-separated tags
-  region      Region
-  rating      Float? // mean of their completed sessions' avgRating; null if none
-  hiringStage HiringStage
-  joinedAt    DateTime
+  id           String      @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo       Boolean     @default(false)
+  deletedAt    DateTime?
+  trashBatchId String?
+  name         String
+  email        String
+  expertise    String // comma-separated tags
+  region       Region
+  rating       Float? // mean of their completed sessions' avgRating; null if none
+  hiringStage  HiringStage
+  joinedAt     DateTime
 
   sessions Session[]
 
   @@unique([id, workspaceId])
   @@unique([workspaceId, email])
   @@index([workspaceId])
+  @@index([trashBatchId])
 }
 
 model SME {
@@ -289,6 +305,8 @@ model SME {
   workspaceId  String
   workspace    Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   isDemo       Boolean     @default(false)
+  deletedAt    DateTime?
+  trashBatchId String?
   name         String
   email        String
   domain       String
@@ -302,25 +320,28 @@ model SME {
   @@unique([id, workspaceId])
   @@unique([workspaceId, email])
   @@index([workspaceId])
+  @@index([trashBatchId])
 }
 
 model Module {
-  id          String      @id @default(cuid())
-  workspaceId String
-  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  isDemo      Boolean     @default(false)
-  courseId    String
-  course      Course      @relation(fields: [courseId, workspaceId], references: [id, workspaceId])
-  title       String
-  description String
-  tags        String // comma-separated, like Instructor.expertise
-  order       Int
-  stage       ModuleStage
-  ownerName   String
-  reviewerId  String?
-  reviewer    SME?        @relation(fields: [reviewerId], references: [id])
-  dueDate     DateTime
-  updatedAt   DateTime
+  id           String      @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo       Boolean     @default(false)
+  deletedAt    DateTime?
+  trashBatchId String?
+  courseId     String
+  course       Course      @relation(fields: [courseId, workspaceId], references: [id, workspaceId])
+  title        String
+  description  String
+  tags         String // comma-separated, like Instructor.expertise
+  order        Int
+  stage        ModuleStage
+  ownerName    String
+  reviewerId   String?
+  reviewer     SME?        @relation(fields: [reviewerId], references: [id])
+  dueDate      DateTime
+  updatedAt    DateTime
 
   versions ModuleVersion[]
   sessions Session[]
@@ -329,23 +350,27 @@ model Module {
   @@unique([id, workspaceId])
   @@index([courseId])
   @@index([workspaceId])
+  @@index([trashBatchId])
 }
 
 model ModuleVersion {
-  id          String    @id @default(cuid())
-  workspaceId String
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  isDemo      Boolean   @default(false)
-  moduleId    String
-  module      Module    @relation(fields: [moduleId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
-  version     String
-  changelog   String
-  authorName  String
-  createdAt   DateTime
+  id           String    @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo       Boolean   @default(false)
+  deletedAt    DateTime?
+  trashBatchId String?
+  moduleId     String
+  module       Module    @relation(fields: [moduleId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
+  version      String
+  changelog    String
+  authorName   String
+  createdAt    DateTime
 
   @@unique([moduleId, version])
   @@unique([id, workspaceId])
   @@index([workspaceId])
+  @@index([trashBatchId])
 }
 
 model Session {
@@ -353,6 +378,8 @@ model Session {
   workspaceId  String
   workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   isDemo       Boolean       @default(false)
+  deletedAt    DateTime?
+  trashBatchId String?
   cohortId     String
   cohort       Cohort        @relation(fields: [cohortId, workspaceId], references: [id, workspaceId])
   moduleId     String?
@@ -377,113 +404,129 @@ model Session {
   @@index([instructorId])
   @@index([scheduledAt])
   @@index([workspaceId])
+  @@index([trashBatchId])
 }
 
 model LearnerFeedback {
-  id          String    @id @default(cuid())
-  workspaceId String
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  isDemo      Boolean   @default(false)
-  sessionId   String
-  session     Session   @relation(fields: [sessionId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
-  cohortId    String
-  cohort      Cohort    @relation(fields: [cohortId, workspaceId], references: [id, workspaceId])
-  learnerId   String // pseudonymous learner handle
-  rating      Int // 1–5
-  sentiment   Sentiment
-  theme       String // pacing | clarity | examples | audio | engagement | depth | ...
-  comment     String
-  createdAt   DateTime
+  id           String    @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo       Boolean   @default(false)
+  deletedAt    DateTime?
+  trashBatchId String?
+  sessionId    String
+  session      Session   @relation(fields: [sessionId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
+  cohortId     String
+  cohort       Cohort    @relation(fields: [cohortId, workspaceId], references: [id, workspaceId])
+  learnerId    String // pseudonymous learner handle
+  rating       Int // 1–5
+  sentiment    Sentiment
+  theme        String // pacing | clarity | examples | audio | engagement | depth | ...
+  comment      String
+  createdAt    DateTime
 
   @@unique([sessionId, learnerId])
   @@unique([id, workspaceId])
   @@index([cohortId])
   @@index([workspaceId])
+  @@index([trashBatchId])
 }
 
 model Issue {
-  id          String        @id @default(cuid())
-  workspaceId String
-  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  isDemo      Boolean       @default(false)
-  code        String
-  title       String
-  description String
-  category    IssueCategory
-  severity    Severity
-  status      IssueStatus
-  ownerName   String?
-  courseId    String?
-  course      Course?       @relation(fields: [courseId], references: [id])
-  cohortId    String?
-  cohort      Cohort?       @relation(fields: [cohortId], references: [id])
-  sessionId   String?
-  session     Session?      @relation(fields: [sessionId], references: [id])
-  openedAt    DateTime
-  resolvedAt  DateTime?
+  id           String        @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo       Boolean       @default(false)
+  deletedAt    DateTime?
+  trashBatchId String?
+  code         String
+  title        String
+  description  String
+  category     IssueCategory
+  severity     Severity
+  status       IssueStatus
+  ownerName    String?
+  courseId     String?
+  course       Course?       @relation(fields: [courseId], references: [id])
+  cohortId     String?
+  cohort       Cohort?       @relation(fields: [cohortId], references: [id])
+  sessionId    String?
+  session      Session?      @relation(fields: [sessionId], references: [id])
+  openedAt     DateTime
+  resolvedAt   DateTime?
 
   @@unique([id, workspaceId])
   @@unique([workspaceId, code])
   @@index([status])
   @@index([workspaceId])
+  @@index([trashBatchId])
 }
 
 model Project {
-  id          String        @id @default(cuid())
-  workspaceId String
-  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  isDemo      Boolean       @default(false)
-  title       String
-  description String
-  type        ProjectType
-  status      ProjectStatus
-  courseId    String
-  course      Course        @relation(fields: [courseId, workspaceId], references: [id, workspaceId])
-  cohortId    String
-  cohort      Cohort        @relation(fields: [cohortId, workspaceId], references: [id, workspaceId])
-  dueDate     DateTime
-  submissions Int
-  avgScore    Float? // 0–100, null until graded
+  id           String        @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo       Boolean       @default(false)
+  deletedAt    DateTime?
+  trashBatchId String?
+  title        String
+  description  String
+  type         ProjectType
+  status       ProjectStatus
+  courseId     String
+  course       Course        @relation(fields: [courseId, workspaceId], references: [id, workspaceId])
+  cohortId     String
+  cohort       Cohort        @relation(fields: [cohortId, workspaceId], references: [id, workspaceId])
+  dueDate      DateTime
+  submissions  Int
+  avgScore     Float? // 0–100, null until graded
 
   @@unique([id, workspaceId])
   @@index([workspaceId])
+  @@index([trashBatchId])
 }
 
 model Launch {
-  id          String       @id @default(cuid())
-  workspaceId String
-  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  isDemo      Boolean      @default(false)
-  name        String
-  courseId    String
-  course      Course       @relation(fields: [courseId, workspaceId], references: [id, workspaceId])
-  cohortId    String?
-  cohort      Cohort?      @relation(fields: [cohortId], references: [id])
-  targetDate  DateTime
-  status      LaunchStatus
-  ownerName   String
+  id           String       @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo       Boolean      @default(false)
+  deletedAt    DateTime?
+  trashBatchId String?
+  name         String
+  courseId     String
+  course       Course       @relation(fields: [courseId, workspaceId], references: [id, workspaceId])
+  cohortId     String?
+  cohort       Cohort?      @relation(fields: [cohortId], references: [id])
+  targetDate   DateTime
+  status       LaunchStatus
+  ownerName    String
 
   checklist ChecklistItem[]
 
   @@unique([id, workspaceId])
   @@index([workspaceId])
+  @@index([trashBatchId])
 }
 
 model ChecklistItem {
-  id          String    @id @default(cuid())
-  workspaceId String
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  isDemo      Boolean   @default(false)
-  launchId    String
-  launch      Launch    @relation(fields: [launchId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
-  label       String
-  ownerName   String
-  dueDate     DateTime
-  done        Boolean
-  doneAt      DateTime?
+  id           String    @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  isDemo       Boolean   @default(false)
+  deletedAt    DateTime?
+  trashBatchId String?
+  launchId     String
+  launch       Launch    @relation(fields: [launchId, workspaceId], references: [id, workspaceId], onDelete: Cascade)
+  label        String
+  ownerName    String
+  dueDate      DateTime
+  done         Boolean
+  doneAt       DateTime?
 
   @@unique([id, workspaceId])
   @@index([workspaceId])
+  @@index([trashBatchId])
 }
 
 // Append-only log that powers "What changed".
@@ -534,7 +577,8 @@ model ImportSource {
   updatedAt       DateTime   @updatedAt
   lastSyncedAt    DateTime?
 
-  runs ImportRun[]
+  runs  ImportRun[]
+  links ImportLink[]
 
   @@unique([workspaceId, entityType, sourceKey])
   @@unique([id, workspaceId])
@@ -556,11 +600,52 @@ model ImportRun {
   updated     Int
   unchanged   Int
   skipped     Int
+  deleted     Int           @default(0) // sheet rows for records deleted in the app, not re-imported
   errors      Json // [{ row: number, reasons: string[] }]
   createdAt   DateTime      @default(now())
 
   @@unique([id, workspaceId])
   @@index([workspaceId, createdAt])
+}
+
+// Which record each row of a linked Google Sheet became, by the row's match key (normalized
+// name, plus course for modules). Kept after the record is deleted, even after it's purged
+// from Trash, so "Sync now" skips that row instead of re-importing it.
+model ImportLink {
+  id          String       @id @default(cuid())
+  workspaceId String
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sourceId    String
+  source      ImportSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  matchKey    String
+  recordId    String
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([sourceId, matchKey])
+  @@unique([id, workspaceId])
+  @@index([workspaceId])
+}
+
+// ---------- Trash ----------
+
+// One delete (a record and everything under it, or a bulk selection). Restore and purge
+// act on a whole batch. Optional links to the deleted records are cleared on delete and
+// remembered in `unlinks` so a restore puts them back.
+model TrashBatch {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  entityType    String // record type of the deleted roots: course | cohort | ...
+  label         String // "Course AIE AI Engineering" or "3 courses"
+  rootIds       Json // string[]
+  contents      Json // [{ label: "cohorts", count: 3 }, ...] (dependents, for the Trash list)
+  unlinks       Json // [{ model, field, value, ids: string[] }]
+  deletedById   String? // no FK: the batch outlives the account
+  deletedByName String
+  deletedAt     DateTime
+
+  @@unique([id, workspaceId])
+  @@index([workspaceId, deletedAt])
 }
 
 // ---------- AI (per workspace) ----------

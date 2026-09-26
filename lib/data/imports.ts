@@ -4,15 +4,18 @@
 // existing records by name (lib/import/match.ts), and are written in one transaction.
 // Each import remembers its column mapping (ImportSource) so the next one from the same
 // sheet or CSV layout is one click, records an ImportRun, and logs one ActivityEvent.
+// For Google Sheets it also remembers which record each row became (ImportLink), so a row
+// whose record was deleted in the app is skipped on the next sync instead of re-imported.
 import { requireRole, type WorkspaceContext } from "@/lib/auth/access";
 import { AIUnavailableError, describeAIMode, getAIProvider, type ColumnSuggestion } from "@/lib/ai/provider";
 import { scopedDb } from "@/lib/data/scoped";
+import { purgeExpiredTrash } from "@/lib/data/trash";
 import {
   fieldChanges, isUniqueViolation, listRecordValues, persistRecord, validateRecord, validationContext,
   type RecordRow, type Validated, type ValidationContext,
 } from "@/lib/data/records";
 import { readSheet, sheetsAccessToken, type Fetch } from "@/lib/google/sheets";
-import { planRows, type ExistingRecord, type RowInput } from "@/lib/import/match";
+import { matchKey, planRows, type ExistingRecord, type RowInput } from "@/lib/import/match";
 import {
   exactMapping, headerSignature, importFields, mappingProblems, MATCH_RULES,
   type ImportType, type Mapping,
@@ -39,7 +42,7 @@ export type ImportRequest = { type: ImportType; source: ImportSourceInput; mappi
 
 export type PreviewRow = {
   rowNumber: number;
-  kind: "new" | "update" | "unchanged" | "invalid";
+  kind: "new" | "update" | "unchanged" | "invalid" | "deleted";
   label: string;
   changes?: { field: string; from: string; to: string }[];
   reasons?: string[];
@@ -48,7 +51,7 @@ export type PreviewRow = {
 export type Preview = {
   type: ImportType;
   sourceName: string;
-  counts: { new: number; update: number; unchanged: number; invalid: number };
+  counts: { new: number; update: number; unchanged: number; invalid: number; deleted: number };
   rows: PreviewRow[];
 };
 
@@ -69,9 +72,28 @@ async function loadRows(ctx: WorkspaceContext, source: ImportSourceInput, fetchI
   return { name: `${data.spreadsheetTitle} · ${data.tabTitle}`, headers: data.headers, rows: data.rows, sheetTitle: data.tabTitle };
 }
 
-type Planned =
-  | { preview: PreviewRow; write?: undefined }
-  | { preview: PreviewRow; write: Extract<Validated, { ok: true }> };
+type Planned = {
+  preview: PreviewRow;
+  write?: Extract<Validated, { ok: true }>;
+  /** The row's match key, and the existing record it matched (update / unchanged). */
+  key: string;
+  matchedId?: string;
+};
+
+export const DELETED_IN_APP = "Deleted in the app after an earlier sync, so it isn't imported again.";
+
+/** For a linked Google Sheet: the record each row became on earlier imports, by match key. */
+async function sheetLinks(ctx: WorkspaceContext, type: ImportType, source: ImportSourceInput, headers: string[]): Promise<Map<string, string>> {
+  if (source.kind !== "SHEET") return new Map();
+  const db = scopedDb(ctx);
+  const s = await db.importSource.findUnique({
+    where: { workspaceId_entityType_sourceKey: { workspaceId: ctx.workspace.id, entityType: type, sourceKey: sourceKeyFor(source, headers) } },
+    select: { id: true },
+  });
+  if (!s) return new Map();
+  const links = await db.importLink.findMany({ where: { sourceId: s.id }, select: { matchKey: true, recordId: true } });
+  return new Map(links.map((l) => [l.matchKey, l.recordId]));
+}
 
 /** Validation messages as row reasons, each naming its field. */
 function reasonsFrom(type: ImportType, errors: Record<string, string>): string[] {
@@ -81,7 +103,14 @@ function reasonsFrom(type: ImportType, errors: Record<string, string>): string[]
   });
 }
 
-async function plan(ctx: WorkspaceContext, type: ImportType, data: LoadedRows, mapping: Mapping, vc: ValidationContext): Promise<Planned[]> {
+async function plan(
+  ctx: WorkspaceContext,
+  type: ImportType,
+  data: LoadedRows,
+  mapping: Mapping,
+  vc: ValidationContext,
+  links: Map<string, string>,
+): Promise<Planned[]> {
   const problems = mappingProblems(type, mapping);
   if (problems.length) throw new ImportError(problems.join(" "));
   const fields = importFields(type);
@@ -113,21 +142,29 @@ async function plan(ctx: WorkspaceContext, type: ImportType, data: LoadedRows, m
     await Promise.all(
       planned.slice(start, start + 25).map(async (p, k) => {
         const idx = start + k;
+        const key = matchKey(type, inputs[idx].values);
         if (p.kind === "invalid") {
-          out[idx] = { preview: { rowNumber: p.rowNumber, kind: "invalid", label: p.label, reasons: p.reasons } };
+          out[idx] = { key, preview: { rowNumber: p.rowNumber, kind: "invalid", label: p.label, reasons: p.reasons } };
+          return;
+        }
+        // This sheet row became a record that has since been deleted (in Trash or purged).
+        const linked = links.get(key);
+        if (p.kind === "new" && linked && !rowById.has(linked)) {
+          out[idx] = { key, preview: { rowNumber: p.rowNumber, kind: "deleted", label: p.label, reasons: [DELETED_IN_APP] } };
           return;
         }
         const existingRow = p.kind === "update" ? rowById.get(p.id)! : null;
+        const matchedId = p.kind === "update" ? p.id : undefined;
         const v = await validateRecord(ctx, type, existingRow, p.values, vc);
         if (!v.ok) {
-          out[idx] = { preview: { rowNumber: p.rowNumber, kind: "invalid", label: p.label, reasons: reasonsFrom(type, v.errors) } };
+          out[idx] = { key, preview: { rowNumber: p.rowNumber, kind: "invalid", label: p.label, reasons: reasonsFrom(type, v.errors) } };
         } else if (p.kind === "update") {
           const changes = fieldChanges(type, p.before, p.values, vc.options);
           out[idx] = changes.length
-            ? { preview: { rowNumber: p.rowNumber, kind: "update", label: p.label, changes }, write: v }
-            : { preview: { rowNumber: p.rowNumber, kind: "unchanged", label: p.label } };
+            ? { key, matchedId, preview: { rowNumber: p.rowNumber, kind: "update", label: p.label, changes }, write: v }
+            : { key, matchedId, preview: { rowNumber: p.rowNumber, kind: "unchanged", label: p.label } };
         } else {
-          out[idx] = { preview: { rowNumber: p.rowNumber, kind: "new", label: p.label }, write: v };
+          out[idx] = { key, preview: { rowNumber: p.rowNumber, kind: "new", label: p.label }, write: v };
         }
       }),
     );
@@ -136,7 +173,7 @@ async function plan(ctx: WorkspaceContext, type: ImportType, data: LoadedRows, m
 }
 
 function counts(rows: PreviewRow[]) {
-  const c = { new: 0, update: 0, unchanged: 0, invalid: 0 };
+  const c = { new: 0, update: 0, unchanged: 0, invalid: 0, deleted: 0 };
   for (const r of rows) c[r.kind]++;
   return c;
 }
@@ -210,7 +247,8 @@ export async function previewImport(ctx: WorkspaceContext, req: ImportRequest, f
   requireRole(ctx, "EDITOR", "Importing");
   const data = await loadRows(ctx, req.source, fetchImpl);
   const vc = await validationContext(ctx, now);
-  const rows = (await plan(ctx, req.type, data, req.mapping, vc)).map((p) => p.preview);
+  const links = await sheetLinks(ctx, req.type, req.source, data.headers);
+  const rows = (await plan(ctx, req.type, data, req.mapping, vc, links)).map((p) => p.preview);
   return { type: req.type, sourceName: data.name, counts: counts(rows), rows };
 }
 
@@ -218,7 +256,8 @@ export type RunResult = {
   runId: string;
   sourceId: string;
   sourceName: string;
-  counts: { created: number; updated: number; unchanged: number; skipped: number };
+  /** skipped = invalid rows; deleted = sheet rows whose record was deleted in the app. */
+  counts: { created: number; updated: number; unchanged: number; skipped: number; deleted: number };
   errors: { row: number; label: string; reasons: string[] }[];
 };
 
@@ -234,9 +273,11 @@ export async function runImport(
   requireRole(ctx, "EDITOR", "Importing");
   const trigger = opts.trigger ?? "import";
   const now = opts.now ?? new Date();
+  await purgeExpiredTrash(ctx, now);
   const data = await loadRows(ctx, req.source, opts.fetchImpl ?? fetch);
   const vc = await validationContext(ctx, now);
-  const planned = await plan(ctx, req.type, data, req.mapping, vc);
+  const links = await sheetLinks(ctx, req.type, req.source, data.headers);
+  const planned = await plan(ctx, req.type, data, req.mapping, vc, links);
   const c = counts(planned.map((p) => p.preview));
   const errors = planned
     .filter((p) => p.preview.kind === "invalid")
@@ -249,7 +290,12 @@ export async function runImport(
   try {
     return await db.$transaction(
       async (tx) => {
-        for (const p of planned) if (p.write) await persistRecord(tx, ctx, req.type, p.write, vc, { logActivity: false });
+        // Which record each row is now (new, updated or unchanged), for the next sync.
+        const became = new Map<string, string>();
+        for (const p of planned) {
+          if (p.write) became.set(p.key, (await persistRecord(tx, ctx, req.type, p.write, vc, { logActivity: false })).id);
+          else if (p.matchedId) became.set(p.key, p.matchedId);
+        }
 
         const sourceKey = sourceKeyFor(req.source, data.headers);
         const sheet = req.source.kind === "SHEET" ? req.source : null;
@@ -269,11 +315,21 @@ export async function runImport(
         const run = await tx.importRun.create({
           data: {
             workspaceId: ctx.workspace.id, sourceId: source.id, entityType: req.type, trigger, sourceName: data.name, actorName: actor,
-            created: c.new, updated: c.update, unchanged: c.unchanged, skipped: c.invalid,
+            created: c.new, updated: c.update, unchanged: c.unchanged, skipped: c.invalid, deleted: c.deleted,
             errors: errors.slice(0, MAX_STORED_ERRORS), createdAt: now,
           },
         });
-        const parts = [`${c.new} new`, `${c.update} updated`, ...(c.unchanged ? [`${c.unchanged} unchanged`] : []), `${c.invalid} skipped`];
+        if (sheet && became.size) {
+          const keys = [...became.keys()];
+          await tx.importLink.deleteMany({ where: { sourceId: source.id, matchKey: { in: keys } } });
+          await tx.importLink.createMany({
+            data: keys.map((matchKey) => ({ workspaceId: ctx.workspace.id, sourceId: source.id, matchKey, recordId: became.get(matchKey)! })),
+          });
+        }
+        const parts = [
+          `${c.new} new`, `${c.update} updated`, ...(c.unchanged ? [`${c.unchanged} unchanged`] : []), `${c.invalid} skipped`,
+          ...(c.deleted ? [`${c.deleted} deleted in the app, not re-imported`] : []),
+        ];
         await tx.activityEvent.create({
           data: {
             workspaceId: ctx.workspace.id, entityType: "Import", entityId: run.id, action: trigger === "sync" ? "synced" : "imported",
@@ -283,7 +339,7 @@ export async function runImport(
         });
         return {
           runId: run.id, sourceId: source.id, sourceName: data.name,
-          counts: { created: c.new, updated: c.update, unchanged: c.unchanged, skipped: c.invalid }, errors,
+          counts: { created: c.new, updated: c.update, unchanged: c.unchanged, skipped: c.invalid, deleted: c.deleted }, errors,
         };
       },
       { timeout: 120_000 },
@@ -301,7 +357,7 @@ export type SourceSummary = {
   name: string;
   lastSyncedAt: Date | null;
   updatedAt: Date;
-  lastRun: { at: Date; trigger: string; actor: string; created: number; updated: number; unchanged: number; skipped: number } | null;
+  lastRun: { at: Date; trigger: string; actor: string; created: number; updated: number; unchanged: number; skipped: number; deleted: number } | null;
 };
 
 export async function listImportSources(ctx: WorkspaceContext): Promise<SourceSummary[]> {
@@ -313,7 +369,7 @@ export async function listImportSources(ctx: WorkspaceContext): Promise<SourceSu
     const r = s.runs[0];
     return {
       id: s.id, type: s.entityType as ImportType, kind: s.kind, name: s.name, lastSyncedAt: s.lastSyncedAt, updatedAt: s.updatedAt,
-      lastRun: r ? { at: r.createdAt, trigger: r.trigger, actor: r.actorName, created: r.created, updated: r.updated, unchanged: r.unchanged, skipped: r.skipped } : null,
+      lastRun: r ? { at: r.createdAt, trigger: r.trigger, actor: r.actorName, created: r.created, updated: r.updated, unchanged: r.unchanged, skipped: r.skipped, deleted: r.deleted } : null,
     };
   });
 }
@@ -327,7 +383,8 @@ export async function getImportSource(ctx: WorkspaceContext, id: string) {
 
 /**
  * One-way sync, sheet to app, with the clicking user's own Google access. Stops (and asks
- * for a re-map) if the sheet's columns changed. Never deletes records missing from the sheet.
+ * for a re-map) if the sheet's columns changed. Never deletes records missing from the sheet,
+ * and skips rows whose record was deleted in the app since an earlier sync.
  */
 export async function syncImportSource(ctx: WorkspaceContext, sourceId: string, fetchImpl: Fetch = fetch, now = new Date()): Promise<RunResult> {
   requireRole(ctx, "EDITOR", "Syncing");

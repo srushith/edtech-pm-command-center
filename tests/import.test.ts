@@ -12,6 +12,7 @@ import {
 } from "@/lib/data/imports";
 import { runIntegrityChecks } from "@/lib/data/integrity";
 import { saveRecord } from "@/lib/data/records";
+import { deleteForever, deleteRecords, restoreFromTrash } from "@/lib/data/trash";
 import { scopedDb } from "@/lib/data/scoped";
 import { getSearchIndex } from "@/lib/data/search";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
@@ -106,14 +107,14 @@ describe("CSV import", () => {
   test("preview classifies new rows and writes nothing", async () => {
     const source = csv(COURSES, "courses.csv");
     const p = await previewImport(owner, { type: "course", source, mapping: exactMapping("course", source.kind === "CSV" ? source.headers : []) }, fetch, NOW);
-    assert.deepEqual(p.counts, { new: 2, update: 0, unchanged: 0, invalid: 0 });
+    assert.deepEqual(p.counts, { new: 2, update: 0, unchanged: 0, invalid: 0, deleted: 0 });
     assert.equal(await scopedDb(owner).course.count(), 0);
   });
 
   test("import creates records, saves the mapping, records the run and logs one event", async () => {
     const source = csv(COURSES, "courses.csv");
     const r = await runImport(editor, { type: "course", source, mapping: exactMapping("course", (source as { headers: string[] }).headers) }, { now: NOW });
-    assert.deepEqual(r.counts, { created: 2, updated: 0, unchanged: 0, skipped: 0 });
+    assert.deepEqual(r.counts, { created: 2, updated: 0, unchanged: 0, skipped: 0, deleted: 0 });
     const courses = await scopedDb(owner).course.findMany({ orderBy: { code: "asc" } });
     assert.deepEqual(courses.map((c) => [c.code, c.region, c.status]), [["EVL", "GLOBAL", "IN_DEVELOPMENT"], ["RAG", "US", "ACTIVE"]]);
     const events = await scopedDb(owner).activityEvent.findMany({ where: { entityType: "Import" } });
@@ -132,7 +133,7 @@ describe("CSV import", () => {
     const help2 = await prepareMapping(owner, "course", reordered);
     assert.equal(help2.savedMatches, true, "column order doesn't matter");
     const r = await runImport(owner, { type: "course", source: csv(COURSES), mapping: help.saved! }, { now: NOW });
-    assert.deepEqual(r.counts, { created: 0, updated: 0, unchanged: 2, skipped: 0 });
+    assert.deepEqual(r.counts, { created: 0, updated: 0, unchanged: 2, skipped: 0, deleted: 0 });
   });
 
   test("updates match by name; blank cells keep existing values; changes are listed", async () => {
@@ -176,7 +177,7 @@ describe("CSV import", () => {
     assert.match(reason(5), /ambiguous/);
     assert.match(reason(6), /Same name as row 7/);
     const r = await runImport(owner, { type: "cohort", source, mapping }, { now: NOW });
-    assert.deepEqual(r.counts, { created: 2, updated: 0, unchanged: 0, skipped: 5 });
+    assert.deepEqual(r.counts, { created: 2, updated: 0, unchanged: 0, skipped: 5, deleted: 0 });
     assert.equal(r.errors.length, 5);
     const run = await scopedDb(owner).importRun.findFirstOrThrow({ where: { id: r.runId } });
     assert.equal(run.skipped, 5);
@@ -196,7 +197,7 @@ describe("CSV import", () => {
     const source = csv("Course,Title,Description,Stage,Owner,Due date,SME reviewer\nRAG,Chunking,Split docs,Planned,Olivia,2026-10-01,\nRAG,Embeddings,Vectors,Drafting,Olivia,2026-10-15,\nEVL,Chunking,Eval chunking,Planned,Olivia,2026-10-01,\n");
     const mapping = { ...exactMapping("module", (source as { headers: string[] }).headers), Owner: "ownerName" };
     const r = await runImport(owner, { type: "module", source, mapping }, { now: NOW });
-    assert.deepEqual(r.counts, { created: 3, updated: 0, unchanged: 0, skipped: 0 }, JSON.stringify(r.errors));
+    assert.deepEqual(r.counts, { created: 3, updated: 0, unchanged: 0, skipped: 0, deleted: 0 }, JSON.stringify(r.errors));
     const rag = await scopedDb(owner).module.findMany({ where: { course: { code: "RAG" } }, orderBy: { order: "asc" } });
     assert.deepEqual(rag.map((m) => [m.title, m.order]), [["Chunking", 1], ["Embeddings", 2]]);
   });
@@ -271,7 +272,7 @@ describe("Google Sheets (fake Google API)", () => {
     values = [...values, ["Alan Turing", "alan@x.test", "Evals", "Bletchley", 6, "Active"]];
     values[1][4] = 8;
     const s = await syncImportSource(editor, r.sourceId, fakeFetch, NOW);
-    assert.deepEqual(s.counts, { created: 1, updated: 1, unchanged: 0, skipped: 0 });
+    assert.deepEqual(s.counts, { created: 1, updated: 1, unchanged: 0, skipped: 0, deleted: 0 });
     assert.equal(tokenCalls, 1);
     const ev = await scopedDb(owner).activityEvent.findFirstOrThrow({ where: { entityType: "Import", action: "synced" } });
     assert.match(ev.summary, /Eli synced SMEs from "PM Roster · SMEs" \(Google Sheet\): 1 new, 1 updated, 0 skipped/);
@@ -282,6 +283,42 @@ describe("Google Sheets (fake Google API)", () => {
     forbid = true;
     await assert.rejects(syncImportSource(editor, r.sourceId, fakeFetch, NOW), (e: unknown) => e instanceof SheetsError && e.code === "no-access");
     forbid = false;
+  });
+
+  test("records deleted in the app are skipped by the next sync, even after they're purged", async () => {
+    const [src] = (await listImportSources(editor)).filter((x) => x.kind === "SHEET");
+    const header = ["Name", "Email", "Domain", "Company", "Hours per week", "Hiring stage"];
+    values = [header, ["Grace Hopper", "grace@x.test", "RAG & Retrieval", "Navy", 8, "Sourced"], ["Alan Turing", "alan@x.test", "Evals", "Bletchley", 6, "Active"]];
+    assert.deepEqual((await syncImportSource(editor, src.id, fakeFetch, NOW)).counts, { created: 0, updated: 0, unchanged: 2, skipped: 0, deleted: 0 });
+
+    const alan = await scopedDb(editor).sME.findFirstOrThrow({ where: { email: "alan@x.test" } });
+    const { batchId } = await deleteRecords(editor, "sme", [alan.id], null, NOW);
+    const source = { kind: "SHEET" as const, spreadsheetId: SHEET, sheetId: 7 };
+    const preview = await previewImport(editor, { type: "sme", source, mapping: exactMapping("sme", header) }, fakeFetch, NOW);
+    assert.equal(preview.counts.deleted, 1);
+    assert.equal(preview.counts.new, 0);
+    assert.match(preview.rows.find((r) => r.label === "Alan Turing")!.reasons![0], /Deleted in the app/);
+
+    const s1 = await syncImportSource(editor, src.id, fakeFetch, NOW);
+    assert.deepEqual(s1.counts, { created: 0, updated: 0, unchanged: 1, skipped: 0, deleted: 1 });
+    assert.equal(await scopedDb(editor).sME.count({ where: { email: "alan@x.test" } }), 0, "not re-imported");
+    const ev = await scopedDb(owner).activityEvent.findFirst({ where: { entityType: "Import", action: "synced", summary: { contains: "deleted in the app" } } });
+    assert.match(ev?.summary ?? "", /: 0 new, 0 updated, 1 unchanged, 0 skipped, 1 deleted in the app, not re-imported$/);
+
+    // Restored: synced like any other row again.
+    await restoreFromTrash(owner, batchId, NOW);
+    assert.deepEqual((await syncImportSource(editor, src.id, fakeFetch, NOW)).counts, { created: 0, updated: 0, unchanged: 2, skipped: 0, deleted: 0 });
+
+    // Deleted for good: still skipped.
+    const again = await deleteRecords(editor, "sme", [alan.id], null, NOW);
+    await deleteForever(owner, again.batchId, NOW);
+    assert.equal((await syncImportSource(editor, src.id, fakeFetch, NOW)).counts.deleted, 1);
+    assert.equal(await scopedDb(editor).sME.count({ where: { email: "alan@x.test" } }), 0);
+
+    // A CSV upload is a deliberate import: the same row comes in as new.
+    const r = await runImport(editor, { type: "sme", source: csv(`Name,Email,Domain,Company,Hours per week,Hiring stage
+Alan Turing,alan@x.test,Evals,Bletchley,6,Active`), mapping: exactMapping("sme", header) }, { now: NOW });
+    assert.equal(r.counts.created, 1);
   });
 
   test("sync uses the clicking user's own access: the owner without a grant is asked to grant", async () => {

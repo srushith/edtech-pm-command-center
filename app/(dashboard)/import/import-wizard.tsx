@@ -462,6 +462,7 @@ const KIND: Record<PreviewRow["kind"], { label: string; status?: "healthy" | "in
   update: { label: "Updated", status: "info" },
   unchanged: { label: "Unchanged" },
   invalid: { label: "Invalid", status: "critical" },
+  deleted: { label: "Deleted in app" },
 };
 
 function PreviewStep({
@@ -487,7 +488,7 @@ function PreviewStep({
         </p>
       )}
       <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="Rows">
-        {(["all", "new", "update", "unchanged", "invalid"] as const).map((k) => {
+        {(["all", "new", "update", "unchanged", "invalid", "deleted"] as const).filter((k) => k !== "deleted" || preview.counts.deleted > 0).map((k) => {
           const n = k === "all" ? preview.rows.length : preview.counts[k];
           return (
             <button
@@ -513,7 +514,7 @@ function PreviewStep({
             {rows.slice(0, PREVIEW_LIMIT).map((r) => (
               <li key={r.rowNumber} className="flex gap-3 px-3 py-2 text-sm">
                 <span className="w-12 shrink-0 text-xs text-muted-foreground tabular-nums">Row {r.rowNumber}</span>
-                <span className="w-20 shrink-0">
+                <span className="w-24 shrink-0">
                   {KIND[r.kind].status ? <StatusBadge status={KIND[r.kind].status!}>{KIND[r.kind].label}</StatusBadge> : <span className="text-xs text-muted-foreground">{KIND[r.kind].label}</span>}
                 </span>
                 <div className="min-w-0 flex-1">
@@ -524,7 +525,7 @@ function PreviewStep({
                     </p>
                   )}
                   {r.reasons && (
-                    <ul className="text-xs text-red-400">{r.reasons.map((x) => <li key={x}>{x}</li>)}</ul>
+                    <ul className={cn("text-xs", r.kind === "deleted" ? "text-muted-foreground" : "text-red-400")}>{r.reasons.map((x) => <li key={x}>{x}</li>)}</ul>
                   )}
                 </div>
               </li>
@@ -538,6 +539,7 @@ function PreviewStep({
         <Button size="sm" variant="ghost" onClick={onEditMapping}><ArrowLeft /> Mapping</Button>
         <p className="ml-auto text-xs text-muted-foreground">
           {preview.counts.invalid > 0 && `${preview.counts.invalid} invalid row${preview.counts.invalid === 1 ? "" : "s"} will be skipped. `}
+          {preview.counts.deleted > 0 && `${preview.counts.deleted} row${preview.counts.deleted === 1 ? "" : "s"} deleted in the app won't come back. `}
           Nothing is deleted.
         </p>
         <Button size="sm" disabled={busy || writes === 0} onClick={onImport}>
@@ -560,7 +562,7 @@ function DoneStep({ type, result, onAnother }: { type: ImportType; result: RunRe
       <p className="flex items-center gap-2 text-sm">
         <Check className="size-4 text-emerald-400" />
         Imported from <span className="font-medium">{result.sourceName}</span>: {c.created} new, {c.updated} updated
-        {c.unchanged ? `, ${c.unchanged} unchanged` : ""}, {c.skipped} skipped. Logged to What changed; the mapping is saved.
+        {c.unchanged ? `, ${c.unchanged} unchanged` : ""}, {c.skipped} skipped{c.deleted ? `, ${c.deleted} deleted in the app (not re-imported)` : ""}. Logged to What changed; the mapping is saved.
       </p>
       {result.errors.length > 0 && (
         <details className="rounded-md border px-3 py-2 text-sm">

@@ -6,10 +6,12 @@ import { Loader2, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ROLE_LABELS, ROLES, type Role } from "@/lib/auth/roles";
-import type { Member, PendingInvite } from "@/lib/data/workspaces";
+import type { AccountDeletionPlan, Member, PendingInvite } from "@/lib/data/workspaces";
 import {
   changeRoleAction,
   clearDemoDataAction,
+  deleteAccountAction,
+  deleteWorkspaceAction,
   inviteAction,
   removeMemberAction,
   renameAction,
@@ -195,6 +197,83 @@ export function DemoDataPanel({ demoRows, canClear }: { demoRows: number; canCle
           <Button size="sm" variant="outline" onClick={() => setConfirming(true)}>Clear demo data</Button>
         ))}
       <Feedback result={result} />
+    </div>
+  );
+}
+
+const sameText = (a: string, b: string) => a.trim().replace(/\s+/g, " ").toLowerCase() === b.trim().replace(/\s+/g, " ").toLowerCase();
+
+/** A destructive action that needs `phrase` typed first. The server checks it again. */
+function TypedConfirm({
+  phrase, label, action, children,
+}: {
+  phrase: string;
+  label: string;
+  action: (typed: string) => Promise<ActionResult>;
+  children: React.ReactNode;
+}) {
+  const { pending, result, run } = useAction();
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState("");
+  if (!open) {
+    return (
+      <Button size="sm" variant="outline" className="text-red-400" onClick={() => setOpen(true)}>
+        <Trash2 /> {label}
+      </Button>
+    );
+  }
+  return (
+    <div className="space-y-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-3">
+      <div className="text-sm text-red-400">{children}</div>
+      <label className="block space-y-1">
+        <span className="text-xs text-muted-foreground">Type <span className="font-mono text-foreground">{phrase}</span> to confirm</span>
+        <Input value={typed} onChange={(e) => setTyped(e.target.value)} className="max-w-sm" autoFocus autoComplete="off" aria-label={`Type ${phrase} to confirm`} />
+      </label>
+      <div className="flex gap-2">
+        <Button size="sm" variant="destructive" disabled={pending || !sameText(typed, phrase)} onClick={() => run(() => action(typed))}>
+          {pending && <Loader2 className="animate-spin" />} {label}
+        </Button>
+        <Button size="sm" variant="ghost" disabled={pending} onClick={() => { setOpen(false); setTyped(""); }}>Cancel</Button>
+      </div>
+      <Feedback result={result} />
+    </div>
+  );
+}
+
+export function DeleteWorkspacePanel({ name }: { name: string }) {
+  return (
+    <TypedConfirm phrase={name} label="Delete workspace" action={deleteWorkspaceAction}>
+      Permanently delete <span className="font-medium">{name}</span>, every record in it, its Trash, imports, AI settings and memberships?
+      Members lose access right away. This can&apos;t be undone.
+    </TypedConfirm>
+  );
+}
+
+export function DeleteAccountPanel({ email, plan }: { email: string; plan: AccountDeletionPlan }) {
+  return (
+    <div className="space-y-2">
+      <div className="space-y-1 text-xs text-muted-foreground">
+        {plan.deletes.length > 0 ? (
+          <>
+            <p>You&apos;re the only owner of these, so they&apos;re deleted with your account (make someone else an owner first to keep one):</p>
+            <ul className="list-disc pl-5 text-foreground">
+              {plan.deletes.map((w) => (
+                <li key={w.id}>
+                  {w.name}
+                  {w.otherMembers > 0 && <span className="text-amber-400"> · {w.otherMembers} other member{w.otherMembers === 1 ? "" : "s"} lose access</span>}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          <p>You don&apos;t own any workspace alone, so no workspace is deleted.</p>
+        )}
+        {plan.leaves.length > 0 && <p>You leave: {plan.leaves.map((w) => w.name).join(", ")}.</p>}
+      </div>
+      <TypedConfirm phrase={email} label="Delete my account" action={deleteAccountAction}>
+        Delete your account ({email}){plan.deletes.length > 0 && ` and ${plan.deletes.length} workspace${plan.deletes.length === 1 ? "" : "s"}`}? Your Google access
+        for this app is revoked and you&apos;re signed out. This can&apos;t be undone.
+      </TypedConfirm>
     </div>
   );
 }

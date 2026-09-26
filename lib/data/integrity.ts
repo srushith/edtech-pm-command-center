@@ -1,5 +1,5 @@
 import type { WorkspaceContext } from "@/lib/auth/access";
-import { scopedDb } from "@/lib/data/scoped";
+import { onlyTrash, scopedDb } from "@/lib/data/scoped";
 import { mean, RESPONSE_RATE_BAND, round2, sentimentForRating } from "@/lib/domain/feedback";
 import { inCohortWindow, nowFor } from "@/lib/domain/time";
 
@@ -96,6 +96,7 @@ export async function runIntegrityChecks(ctx: WorkspaceContext, now = new Date()
     db.project.findMany({ select: { id: true, cohortId: true, submissions: true } }),
     optionalLinkTargets(db),
   ]);
+  const trash = await trashLinks(db);
 
   const cohortById = new Map(cohorts.map((c) => [c.id, c]));
   const sessionById = new Map(sessions.map((s) => [s.id, s]));
@@ -241,6 +242,22 @@ export async function runIntegrityChecks(ctx: WorkspaceContext, now = new Date()
   for (const l of links.launchCohorts) linkCheck(l.id, "Cohort", l.cohortId, new Set(cohorts.map((c) => c.id)));
   const linkCount = sessions.length + links.moduleReviewers.length + links.issueLinks.length + links.launchCohorts.length;
 
+  // 10. Nothing live depends on a record in Trash (deletes take the subtree; restores wait for the parent)
+  const orphaned: Violation[] = [];
+  const parentCheck = (recordId: string, label: string, id: string, trashed: Set<string>) => {
+    if (trashed.has(id)) orphaned.push({ recordId, detail: `${label} ${id} is in Trash` });
+  };
+  for (const s of sessions) {
+    parentCheck(s.id, "Cohort", s.cohortId, trash.cohorts);
+    parentCheck(s.id, "Instructor", s.instructorId, trash.instructors);
+  }
+  for (const f of feedback) {
+    parentCheck(f.id, "Session", f.sessionId, trash.sessions);
+    parentCheck(f.id, "Cohort", f.cohortId, trash.cohorts);
+  }
+  for (const c of trash.liveChildren) parentCheck(c.id, c.label, c.parentId, c.trashed);
+  const dependentCount = sessions.length + feedback.length + trash.liveChildren.length;
+
   return [
     check("attendance", "Attendance ≤ enrolled learners", "Every completed session's attendance is between 0 and its cohort's enrolled learners.", held.length, "completed sessions", attendance),
     check("feedback-per-session", "Feedback count fits attendance", `Feedback rows per session ≤ attendance; demo data also keeps a ${RESPONSE_RATE_BAND.min * 100}–${RESPONSE_RATE_BAND.max * 100}% response rate.`, held.length, "completed sessions", perSession),
@@ -250,7 +267,8 @@ export async function runIntegrityChecks(ctx: WorkspaceContext, now = new Date()
     check("session-timing", "Sessions inside cohort window", "Sessions fall between cohort start and end; past ones aren't SCHEDULED, future ones are.", sessions.length, "sessions", timing),
     check("outcomes", "No outcomes before a session happens", "Only completed sessions have attendance, ratings or feedback; feedback is submitted after the session.", sessions.length + feedback.length, "sessions + feedback", outcomes),
     check("headcount", "Headcount within capacity", `Enrolled ≤ capacity < ${MAX_LEARNERS}; project submissions ≤ enrolled.`, cohorts.length + projects.length, "cohorts + projects", headcount),
-    check("workspace-links", "Links stay inside the workspace", "Optional links (session module/SME, module reviewer, issue course/cohort/session, launch cohort) point at records in this workspace.", linkCount, "records with optional links", crossWorkspace),
+    check("workspace-links", "Links stay inside the workspace", "Optional links (session module/SME, module reviewer, issue course/cohort/session, launch cohort) point at live records in this workspace (links to records in Trash are cleared).", linkCount, "records with optional links", crossWorkspace),
+    check("trash-orphans", "Nothing live depends on Trash", "No live record's required parent (course, cohort, session, instructor, module, launch) is in Trash.", dependentCount, "records with required parents", orphaned),
   ];
 }
 
@@ -266,4 +284,37 @@ async function optionalLinkTargets(db: ReturnType<typeof scopedDb>) {
   ]);
   const ids = (rows: { id: string }[]) => new Set(rows.map((r) => r.id));
   return { modules: ids(modules), smes: ids(smes), courses: ids(courses), moduleReviewers, issueLinks, launchCohorts };
+}
+
+// Trashed parent ids, and the live children (besides sessions and feedback) that point at them, for check 10.
+async function trashLinks(db: ReturnType<typeof scopedDb>) {
+  const ids = async (p: Promise<{ id: string }[]>) => new Set((await p).map((r) => r.id));
+  const [courses, cohorts, sessions, instructors, modules, launches] = await Promise.all([
+    ids(db.course.findMany({ where: onlyTrash, select: { id: true } })),
+    ids(db.cohort.findMany({ where: onlyTrash, select: { id: true } })),
+    ids(db.session.findMany({ where: onlyTrash, select: { id: true } })),
+    ids(db.instructor.findMany({ where: onlyTrash, select: { id: true } })),
+    ids(db.module.findMany({ where: onlyTrash, select: { id: true } })),
+    ids(db.launch.findMany({ where: onlyTrash, select: { id: true } })),
+  ]);
+  const [liveCohorts, liveModules, liveLaunches, liveProjects, versions, checklist] = await Promise.all([
+    db.cohort.findMany({ select: { id: true, courseId: true } }),
+    db.module.findMany({ select: { id: true, courseId: true } }),
+    db.launch.findMany({ select: { id: true, courseId: true } }),
+    db.project.findMany({ select: { id: true, courseId: true, cohortId: true } }),
+    db.moduleVersion.findMany({ select: { id: true, moduleId: true } }),
+    db.checklistItem.findMany({ select: { id: true, launchId: true } }),
+  ]);
+  const liveChildren = [
+    ...liveCohorts.map((c) => ({ id: c.id, label: "Course", parentId: c.courseId, trashed: courses })),
+    ...liveModules.map((m) => ({ id: m.id, label: "Course", parentId: m.courseId, trashed: courses })),
+    ...liveLaunches.map((l) => ({ id: l.id, label: "Course", parentId: l.courseId, trashed: courses })),
+    ...liveProjects.flatMap((p) => [
+      { id: p.id, label: "Course", parentId: p.courseId, trashed: courses },
+      { id: p.id, label: "Cohort", parentId: p.cohortId, trashed: cohorts },
+    ]),
+    ...versions.map((v) => ({ id: v.id, label: "Module", parentId: v.moduleId, trashed: modules })),
+    ...checklist.map((c) => ({ id: c.id, label: "Launch", parentId: c.launchId, trashed: launches })),
+  ];
+  return { cohorts, sessions, instructors, liveChildren };
 }

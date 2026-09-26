@@ -9,10 +9,12 @@ import { getFilterOptions } from "@/lib/data/filters";
 import { getRecordCounts, runIntegrityChecks } from "@/lib/data/integrity";
 import { scopedDb } from "@/lib/data/scoped";
 import { getFocusedEntity, getSearchIndex } from "@/lib/data/search";
+import { deleteForever, deleteRecords, emptyTrash, listTrash, previewDelete, restoreFromTrash, undoDelete } from "@/lib/data/trash";
 import {
   changeRole,
   clearDemoData,
   countDemoData,
+  deleteWorkspace,
   getWorkspaceSettings,
   inviteMember,
   removeMember,
@@ -154,6 +156,42 @@ describe("a member of A cannot edit B's records", () => {
     const a = scopedDb(aOwner) as unknown as Record<string, { findMany?: () => Promise<unknown> }>;
     await rejectsAccess(Promise.resolve().then(() => a.membership.findMany!()));
     await rejectsAccess(Promise.resolve().then(() => scopedDb(aOwner).$queryRawUnsafe("SELECT 1")));
+  });
+});
+
+describe("Trash and deletes stay inside the workspace", () => {
+  test("A can't preview or delete B's records by id", async () => {
+    await rejectsAccess(previewDelete(aOwner, "course", [bCourseId]));
+    await rejectsAccess(deleteRecords(aOwner, "cohort", [bCohortId], "AIE-C1"));
+    assert.ok(await scopedDb(bOwner).cohort.findUnique({ where: { id: bCohortId } }));
+  });
+
+  test("B's Trash is invisible to A, and A can't undo, restore or purge it", async () => {
+    const issue = await scopedDb(bOwner).issue.findFirstOrThrow({ where: { code: "ISS-102" } });
+    const { batchId } = await deleteRecords(bOwner, "issue", [issue.id]);
+    assert.equal((await listTrash(aOwner)).some((i) => i.id === batchId), false);
+    await rejectsAccess(undoDelete(aOwner, batchId));
+    await rejectsAccess(restoreFromTrash(aOwner, batchId));
+    await rejectsAccess(deleteForever(aOwner, batchId));
+    await emptyTrash(aOwner);
+    assert.equal(await db.trashBatch.count({ where: { id: batchId } }), 1);
+    assert.ok((await db.issue.findUniqueOrThrow({ where: { id: issue.id } })).deletedAt);
+    // Same code in A is a different record, untouched.
+    assert.ok(await scopedDb(aOwner).issue.findFirst({ where: { code: "ISS-102" } }));
+    await restoreFromTrash(bOwner, batchId);
+  });
+
+  test("only an owner deletes a workspace, and only their own", async () => {
+    await rejectsAccess(deleteWorkspace(aEditor, "A"));
+    await rejectsAccess(deleteWorkspace(aViewer, "A"));
+    const bRows = await db.course.count({ where: { workspaceId: wsB.id } });
+    const extra = await makeWorkspace(alice.id, "Scratch", { demo: true });
+    const scratch = await ctx(alice.id, extra.id);
+    await rejectsAccess(deleteWorkspace(scratch, "Scratc"));
+    await deleteWorkspace(scratch, "scratch");
+    assert.equal(await db.workspace.count({ where: { id: extra.id } }), 0);
+    assert.equal(await db.course.count({ where: { workspaceId: extra.id } }), 0);
+    assert.equal(await db.course.count({ where: { workspaceId: wsB.id } }), bRows);
   });
 });
 

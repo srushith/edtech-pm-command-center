@@ -1,15 +1,19 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import type { WorkspaceContext } from "@/lib/auth/access";
 import { AccessError, parseRole, ROLE_LABELS } from "@/lib/auth/roles";
-import { requireWorkspace } from "@/lib/auth/session";
+import { signOut } from "@/lib/auth";
+import { requireUser, requireWorkspace, WORKSPACE_COOKIE } from "@/lib/auth/session";
+import { deleteForever, emptyTrash, restoreFromTrash } from "@/lib/data/trash";
 import { removeAIKey, saveAISettings, testAIKey } from "@/lib/data/ai-settings";
 import {
   changeRole,
   clearDemoData,
+  deleteAccount,
+  deleteWorkspace,
   inviteMember,
   removeMember,
   renameWorkspace,
@@ -116,4 +120,51 @@ export async function removeAIKeyAction(): Promise<ActionResult> {
     await removeAIKey(ctx);
     return "AI key removed. This workspace now uses the mock.";
   });
+}
+
+// ---------- Trash (owners only; enforced in lib/data/trash) ----------
+
+export async function restoreFromTrashAction(batchId: string): Promise<ActionResult> {
+  return run(async (ctx) => `Restored ${(await restoreFromTrash(ctx, String(batchId))).label}.`);
+}
+
+export async function deleteForeverAction(batchId: string): Promise<ActionResult> {
+  return run(async (ctx) => `Permanently deleted ${(await deleteForever(ctx, String(batchId))).label}.`);
+}
+
+export async function emptyTrashAction(): Promise<ActionResult> {
+  return run(async (ctx) => {
+    const r = await emptyTrash(ctx);
+    return r.items ? `Trash emptied: ${r.removed.toLocaleString()} records permanently deleted.` : "Trash is already empty.";
+  });
+}
+
+// ---------- Deleting the workspace or your account ----------
+
+/** Owners. Lands in your next workspace, or onboarding when there's none. */
+export async function deleteWorkspaceAction(confirmName: string): Promise<ActionResult> {
+  const ctx = await requireWorkspace();
+  try {
+    await deleteWorkspace(ctx, String(confirmName ?? ""));
+  } catch (e) {
+    if (e instanceof AccessError) return { error: e.message };
+    throw e;
+  }
+  (await cookies()).delete(WORKSPACE_COOKIE);
+  revalidatePath("/", "layout");
+  redirect("/");
+}
+
+/** Your own account only (the id comes from the session). Signs out to the login page. */
+export async function deleteAccountAction(confirmEmail: string): Promise<ActionResult> {
+  const user = await requireUser();
+  try {
+    await deleteAccount(user.id, String(confirmEmail ?? ""));
+  } catch (e) {
+    if (e instanceof AccessError) return { error: e.message };
+    throw e;
+  }
+  (await cookies()).delete(WORKSPACE_COOKIE);
+  await signOut({ redirectTo: "/signin" });
+  return {};
 }

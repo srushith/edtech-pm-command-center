@@ -37,7 +37,7 @@ function SourceRow({ s }: { s: SourceSummary }) {
           <p className="truncate text-sm font-medium">{s.name}</p>
           <p className="truncate text-xs text-muted-foreground">
             {RECORDS[s.type].noun} · {s.kind === "SHEET" ? "Google Sheet, one-way sync" : "CSV"}
-            {run && ` · last ${run.trigger === "sync" ? "sync" : "import"} ${when(run.at)} by ${run.actor}: ${run.created} new, ${run.updated} updated, ${run.skipped} skipped`}
+            {run && ` · last ${run.trigger === "sync" ? "sync" : "import"} ${when(run.at)} by ${run.actor}: ${run.created} new, ${run.updated} updated, ${run.skipped} skipped${run.deleted ? `, ${run.deleted} deleted in app` : ""}`}
           </p>
         </div>
         {s.kind === "SHEET" && (
@@ -51,7 +51,8 @@ function SourceRow({ s }: { s: SourceSummary }) {
       </div>
       {outcome?.result && (
         <p role="status" className="text-xs text-emerald-400">
-          Synced: {outcome.result.counts.created} new, {outcome.result.counts.updated} updated, {outcome.result.counts.unchanged} unchanged, {outcome.result.counts.skipped} skipped.
+          Synced: {outcome.result.counts.created} new, {outcome.result.counts.updated} updated, {outcome.result.counts.unchanged} unchanged, {outcome.result.counts.skipped} skipped
+          {outcome.result.counts.deleted ? `, ${outcome.result.counts.deleted} deleted in the app (not re-imported)` : ""}.
           {outcome.result.errors.length > 0 && (
             <span className="text-muted-foreground"> First skipped: row {outcome.result.errors[0].row}, {outcome.result.errors[0].reasons[0]}</span>
           )}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState, useTransition } from "react";
-import { Loader2, Lock } from "lucide-react";
+import { Loader2, Lock, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
@@ -12,6 +12,7 @@ import { RECORDS } from "@/lib/records/registry";
 import type { EntityType } from "@/lib/search-types";
 import type { SaveResult } from "@/lib/data/records";
 import { saveRecordAction } from "@/app/(dashboard)/records/actions";
+import { useShell } from "@/components/shell/shell-context";
 
 const selectClass =
   "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:border-destructive dark:bg-input/30";
@@ -71,6 +72,7 @@ export function RecordForm({
   onCancel: () => void;
 }) {
   const def = RECORDS[type];
+  const { requestDelete } = useShell();
   const [values, setValues] = useState<Values>(initial);
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const [attempted, setAttempted] = useState(false);
@@ -136,6 +138,11 @@ export function RecordForm({
         )}
       </div>
       <div className="flex items-center gap-2 border-t px-4 py-3">
+        {id && (
+          <Button type="button" variant="ghost" size="sm" className="text-muted-foreground hover:text-red-400" onClick={() => requestDelete({ type, ids: [id] })}>
+            <Trash2 /> Delete
+          </Button>
+        )}
         {formError && <p role="alert" className="mr-auto text-xs text-red-400">{formError}</p>}
         {!formError && attempted && Object.keys(clientErrors).length > 0 && (
           <p className="mr-auto text-xs text-red-400">Fix the highlighted fields.</p>

@@ -22,11 +22,17 @@ export type PlannedRow =
 
 const norm = (s: string | undefined) => (s ?? "").trim().replace(/\s+/g, " ").toLowerCase();
 
+/** What rows are matched by: the normalized name, plus the course for modules. */
+export function matchKey(type: ImportType, v: Values): string {
+  const rule = MATCH_RULES[type];
+  return `${norm(v[rule.nameField])}${rule.scopeField ? `|${v[rule.scopeField] ?? ""}` : ""}`;
+}
+
 export function planRows(type: ImportType, rows: RowInput[], existing: ExistingRecord[], defaults: Values): PlannedRow[] {
   const rule = MATCH_RULES[type];
   const fields = RECORDS[type].fields;
   const labelOf = (name: string) => fields.find((f) => f.name === name)?.label ?? name;
-  const key = (v: Values) => `${norm(v[rule.nameField])}${rule.scopeField ? `|${v[rule.scopeField] ?? ""}` : ""}`;
+  const key = (v: Values) => matchKey(type, v);
 
   const byKey = new Map<string, ExistingRecord[]>();
   const byGuard = new Map<string, ExistingRecord>();

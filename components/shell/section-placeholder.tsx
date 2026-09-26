@@ -1,4 +1,4 @@
-import { EditRecordButton } from "@/components/records/record-buttons";
+import { DeleteRecordButton, EditRecordButton } from "@/components/records/record-buttons";
 import { RecordsPanel } from "@/components/records/records-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { requireWorkspace } from "@/lib/auth/session";
@@ -61,9 +61,10 @@ export async function SectionPlaceholder({
                 <span className="block text-xs text-muted-foreground">{focused.sublabel}</span>
               </p>
               <EditRecordButton type={focused.type} id={focused.id} label={focused.label} />
+              <DeleteRecordButton type={focused.type} id={focused.id} label={focused.label} />
             </div>
           ) : (
-            <p className="mt-1 text-sm text-amber-400">Record not found: {focusParam}</p>
+            <p className="mt-1 text-sm text-amber-400">Record not found: it may have been deleted. ({focusParam})</p>
           )}
         </section>
       )}

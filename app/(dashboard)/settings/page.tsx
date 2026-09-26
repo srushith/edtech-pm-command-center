@@ -2,11 +2,14 @@ import type { Metadata } from "next";
 import { StatusBadge } from "@/components/status-badge";
 import { requireWorkspace } from "@/lib/auth/session";
 import { ROLE_DESCRIPTIONS, ROLE_LABELS, ROLES } from "@/lib/auth/roles";
-import { getWorkspaceSettings } from "@/lib/data/workspaces";
+import Link from "next/link";
+import { ChevronRight, Trash2 } from "lucide-react";
+import { getWorkspaceSettings, planAccountDeletion } from "@/lib/data/workspaces";
+import { countTrash, TRASH_DAYS } from "@/lib/data/trash";
 import { getAISettingsView } from "@/lib/data/ai-settings";
 import { ENCRYPTION_KEY_HELP } from "@/lib/crypto";
 import { AISettingsPanel } from "./ai-settings-panel";
-import { DemoDataPanel, InviteForm, InviteList, MemberList, RenameForm } from "./settings-forms";
+import { DeleteAccountPanel, DeleteWorkspacePanel, DemoDataPanel, InviteForm, InviteList, MemberList, RenameForm } from "./settings-forms";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -24,7 +27,9 @@ function Section({ id, title, description, children }: { id?: string; title: str
 
 export default async function SettingsPage() {
   const ctx = await requireWorkspace();
-  const [s, ai] = await Promise.all([getWorkspaceSettings(ctx), getAISettingsView(ctx)]);
+  const [s, ai, trashCount, accountPlan] = await Promise.all([
+    getWorkspaceSettings(ctx), getAISettingsView(ctx), countTrash(ctx), planAccountDeletion(ctx.user.id),
+  ]);
   const isOwner = s.role === "OWNER";
 
   return (
@@ -77,6 +82,33 @@ export default async function SettingsPage() {
         description="Records created by “Start with demo data”. Clearing also removes anything you attached to a demo record."
       >
         <DemoDataPanel demoRows={s.demoRows} canClear={isOwner} />
+      </Section>
+
+      <Section
+        id="trash"
+        title="Trash"
+        description={`Deleted records stay for ${TRASH_DAYS} days. Editors can delete (and undo right after); only owners restore or empty the Trash.`}
+      >
+        {isOwner ? (
+          <Link href="/settings/trash" className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted/50">
+            <Trash2 className="size-4 text-muted-foreground" />
+            Open Trash
+            <span className="text-muted-foreground tabular-nums">· {trashCount} item{trashCount === 1 ? "" : "s"}</span>
+            <ChevronRight className="ml-auto size-4 text-muted-foreground" />
+          </Link>
+        ) : (
+          <p className="text-sm text-muted-foreground">{trashCount} item{trashCount === 1 ? "" : "s"} in Trash. Ask an owner to restore something.</p>
+        )}
+      </Section>
+
+      {isOwner && (
+        <Section id="delete-workspace" title="Delete workspace" description="Permanently deletes this workspace and all of its data for every member.">
+          <DeleteWorkspacePanel name={s.workspace.name} />
+        </Section>
+      )}
+
+      <Section id="delete-account" title="Delete your account" description={`Signed in as ${ctx.user.email}.`}>
+        <DeleteAccountPanel email={ctx.user.email} plan={accountPlan} />
       </Section>
     </div>
   );

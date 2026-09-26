@@ -24,6 +24,8 @@ export async function switchWorkspace(workspaceId: string): Promise<void> {
   redirect("/");
 }
 
+/** Back to the login page. The workspace cookie goes too, so the next person starts fresh. */
 export async function signOutAction(): Promise<void> {
+  (await cookies()).delete(WORKSPACE_COOKIE);
   await signOut({ redirectTo: "/signin" });
 }
