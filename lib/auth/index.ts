@@ -9,11 +9,22 @@ import { PrismaAdapter } from "@auth/prisma-adapter";
 import { db } from "@/lib/db";
 import { isSignInAllowed } from "@/lib/auth/access";
 import { saveGoogleGrant } from "@/lib/google/sheets";
+import { runtimeEnvVar, testSignInEnabled, testSignInProvider } from "@/lib/auth/test-sign-in";
+
+const withTestSignIn =
+  process.env.NODE_ENV !== "production" && // inlined by Next: false in every production build
+  testSignInEnabled({
+    buildEnv: process.env.NODE_ENV,
+    runtimeEnv: runtimeEnvVar("NODE_ENV"),
+    databaseUrl: runtimeEnvVar("DATABASE_URL"),
+    testDatabaseUrl: runtimeEnvVar("DATABASE_URL_TEST"),
+  });
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   // The adapter is typed against @prisma/client; ours is generated to lib/generated.
   adapter: PrismaAdapter(db as unknown as Parameters<typeof PrismaAdapter>[0]),
-  providers: [Google], // reads AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET
+  // Google reads AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET. The test provider: see lib/auth/test-sign-in.ts.
+  providers: withTestSignIn ? [Google, testSignInProvider()] : [Google],
   session: { strategy: "jwt" },
   pages: { signIn: "/signin", error: "/signin" },
   // Needed behind `next start` and most hosts; the host header is set by our own server/proxy.
