@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FileSpreadsheet, FileText, Loader2, RefreshCw } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button, ButtonLink } from "@/components/ui/button";
 import { useShell } from "@/components/shell/shell-context";
 import type { RunResult, SourceSummary } from "@/lib/data/imports";
 import { RECORDS } from "@/lib/records/registry";
@@ -45,9 +45,9 @@ function SourceRow({ s }: { s: SourceSummary }) {
             {pending ? <Loader2 className="animate-spin" /> : <RefreshCw />} Sync now
           </Button>
         )}
-        <Button size="xs" variant="ghost" render={<Link href={`/import?source=${s.id}`} />}>
+        <ButtonLink size="xs" variant="ghost" href={`/import?source=${s.id}`}>
           {s.kind === "SHEET" ? "Review & import" : "Import new version"}
-        </Button>
+        </ButtonLink>
       </div>
       {outcome?.result && (
         <p role="status" className="text-xs text-emerald-400">

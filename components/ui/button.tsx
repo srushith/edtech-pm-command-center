@@ -1,3 +1,5 @@
+import type * as React from "react"
+import Link from "next/link"
 import { Button as ButtonPrimitive } from "@base-ui/react/button"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
@@ -54,4 +56,21 @@ function Button({
   )
 }
 
-export { Button, buttonVariants }
+// A link that looks like a button. It stays a real <a> (link semantics, open in new tab),
+// unlike <Button render={<Link />}>, which Base UI expects to be a native <button>.
+function ButtonLink({
+  className,
+  variant = "default",
+  size = "default",
+  ...props
+}: React.ComponentProps<typeof Link> & VariantProps<typeof buttonVariants>) {
+  return (
+    <Link
+      data-slot="button"
+      className={cn(buttonVariants({ variant, size, className }))}
+      {...props}
+    />
+  )
+}
+
+export { Button, ButtonLink, buttonVariants }

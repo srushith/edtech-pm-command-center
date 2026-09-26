@@ -14,6 +14,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import {
   DropdownMenu,
@@ -36,13 +37,15 @@ export type ShellUser = { name: string | null; email: string; image: string | nu
 
 function NavItem({ section, active }: { section: Section; active: boolean }) {
   const withFilters = useHrefWithFilters();
+  const { setOpenMobile } = useSidebar();
   const Icon = section.icon;
   return (
     <SidebarMenuItem>
       <SidebarMenuButton
         isActive={active}
         tooltip={`${section.title}  ·  G ${section.shortcut.toUpperCase()}`}
-        render={<Link href={withFilters(section.href)} />}
+        // On a phone the sidebar is a sheet: get it out of the way once a section is picked.
+        render={<Link href={withFilters(section.href)} onClick={() => setOpenMobile(false)} />}
       >
         <Icon />
         <span>{section.title}</span>
@@ -65,6 +68,11 @@ export function AppSidebar({
   const current = sectionForPath(pathname);
   const workspace = workspaces.find((w) => w.id === currentWorkspaceId);
   const { mode } = useMode();
+  const { setOpenMobile } = useSidebar();
+  const go = (href: string) => {
+    setOpenMobile(false);
+    router.push(href);
+  };
   const displayName = user.name ?? user.email;
 
   return (
@@ -123,11 +131,11 @@ export function AppSidebar({
                     </DropdownMenuLabel>
                   </DropdownMenuGroup>
                 )}
-                <DropdownMenuItem onClick={() => router.push(SETTINGS_SECTION.href)}>
+                <DropdownMenuItem onClick={() => go(SETTINGS_SECTION.href)}>
                   <Settings /> Settings
                 </DropdownMenuItem>
                 {workspace?.role === "OWNER" && (
-                  <DropdownMenuItem onClick={() => router.push("/settings/trash")}>
+                  <DropdownMenuItem onClick={() => go("/settings/trash")}>
                     <Trash2 /> Trash
                   </DropdownMenuItem>
                 )}

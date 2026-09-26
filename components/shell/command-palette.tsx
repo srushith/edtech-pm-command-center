@@ -275,7 +275,7 @@ function PaletteContent({
           </CommandGroup>
         )}
       </CommandList>
-      <div className="flex items-center justify-between border-t px-3 py-1.5 text-[11px] text-muted-foreground">
+      <div className="flex shrink-0 items-center justify-between border-t px-3 py-1.5 text-[11px] text-muted-foreground">
         <span>{index ? `${index.length} records · ${SECTIONS.length} sections` : " "}</span>
         <span>↑↓ navigate · ↵ open · esc close</span>
       </div>

@@ -1,10 +1,9 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Check, FileSpreadsheet, FileUp, Loader2, Sparkles, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button, ButtonLink } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/status-badge";
 import { useShell } from "@/components/shell/shell-context";
@@ -575,7 +574,7 @@ function DoneStep({ type, result, onAnother }: { type: ImportType; result: RunRe
         </details>
       )}
       <div className="flex gap-2">
-        <Button size="sm" variant="outline" render={<Link href={section.href} />}>View {plural(type)}</Button>
+        <ButtonLink size="sm" variant="outline" href={section.href}>View {plural(type)}</ButtonLink>
         <Button size="sm" variant="ghost" onClick={onAnother}><X /> New import</Button>
       </div>
     </div>

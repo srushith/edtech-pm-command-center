@@ -9,10 +9,15 @@ function subscribe(onChange: () => void) {
   return () => mql.removeEventListener("change", onChange)
 }
 
+/** For event handlers only. Never branch rendering on it: layout switches with CSS (`md:`). */
+export function isMobileViewport() {
+  return window.matchMedia(QUERY).matches
+}
+
+/**
+ * Renders as false on the server and during hydration, then follows the viewport. Only for
+ * details that don't change the HTML structure (e.g. hiding a hover tooltip on phones).
+ */
 export function useIsMobile() {
-  return React.useSyncExternalStore(
-    subscribe,
-    () => window.matchMedia(QUERY).matches,
-    () => false
-  )
+  return React.useSyncExternalStore(subscribe, isMobileViewport, () => false)
 }

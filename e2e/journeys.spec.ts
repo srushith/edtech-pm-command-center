@@ -60,10 +60,12 @@ async function cohortLifecycle(page: Page, code: string) {
   const row = page.getByRole("row").filter({ has: page.getByRole("cell", { name: code, exact: true }) });
 
   // "C" opens Quick add for editors and owners (the viewer journey checks it doesn't for them).
-  await page.waitForLoadState("networkidle");
-  await page.locator("body").press("c");
+  // The shortcut listener attaches on hydration, which can finish after "networkidle": retry the key.
   const quickAdd = page.getByRole("dialog", { name: "Quick add" });
-  await expect(quickAdd.getByRole("option", { name: "Cohort" })).toBeVisible();
+  await expect(async () => {
+    if (!(await quickAdd.isVisible())) await page.locator("body").press("c");
+    await expect(quickAdd.getByRole("option", { name: "Cohort" })).toBeVisible({ timeout: 1_000 });
+  }).toPass();
   await page.keyboard.press("Escape");
   await expect(quickAdd).toBeHidden();
 

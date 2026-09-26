@@ -72,16 +72,18 @@ function Usage({ view }: { view: AISettingsView }) {
           ))}
         </ul>
       )}
-      <table className="w-full text-xs tabular-nums">
-        <thead className="text-muted-foreground">
-          <tr><th className="text-left font-medium">Month</th><th className="text-right font-medium">Requests</th><th className="text-right font-medium">Tokens in</th><th className="text-right font-medium">Tokens out</th></tr>
-        </thead>
-        <tbody>
-          {[...u.history].reverse().map((m) => (
-            <tr key={m.month}><td>{m.month}</td><td className="text-right">{n(m.requests)}</td><td className="text-right">{n(m.inputTokens)}</td><td className="text-right">{n(m.outputTokens)}</td></tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs tabular-nums">
+          <thead className="text-muted-foreground">
+            <tr><th className="text-left font-medium">Month</th><th className="text-right font-medium">Requests</th><th className="text-right font-medium">Tokens in</th><th className="text-right font-medium">Tokens out</th></tr>
+          </thead>
+          <tbody>
+            {[...u.history].reverse().map((m) => (
+              <tr key={m.month}><td>{m.month}</td><td className="text-right">{n(m.requests)}</td><td className="text-right">{n(m.inputTokens)}</td><td className="text-right">{n(m.outputTokens)}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       <p className="text-[11px] text-muted-foreground">Counts real-provider requests (the mock is free and not counted). Key tests are logged but don&apos;t count toward the limit.</p>
     </div>
   );

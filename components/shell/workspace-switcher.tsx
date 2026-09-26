@@ -12,7 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@/components/ui/sidebar";
+import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar";
 import { ROLE_LABELS } from "@/lib/auth/roles";
 import type { WorkspaceSummary } from "@/lib/auth/access";
 import { switchWorkspace } from "@/app/(dashboard)/actions";
@@ -23,6 +23,7 @@ function initials(name: string) {
 
 export function WorkspaceSwitcher({ workspaces, currentId }: { workspaces: WorkspaceSummary[]; currentId: string }) {
   const [pending, startSwitch] = useTransition();
+  const { setOpenMobile } = useSidebar();
   const current = workspaces.find((w) => w.id === currentId) ?? workspaces[0];
 
   return (
@@ -60,7 +61,7 @@ export function WorkspaceSwitcher({ workspaces, currentId }: { workspaces: Works
             <DropdownMenuItem render={<Link href="/onboarding?new=1" />}>
               <Plus /> New workspace
             </DropdownMenuItem>
-            <DropdownMenuItem render={<Link href="/settings" />}>
+            <DropdownMenuItem render={<Link href="/settings" onClick={() => setOpenMobile(false)} />}>
               <Settings /> Workspace settings
             </DropdownMenuItem>
           </DropdownMenuContent>
