@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useState, useSyncExternalStore } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { FILTER_KEYS } from "@/lib/filters";
 import { MODE_COOKIE, MODE_PARAM, parseMode, resolveMode, type Mode } from "@/lib/mode";
@@ -13,6 +13,8 @@ export type RecordFormTarget = { type: EntityType; id: string | null };
 export type DeleteRequest = { type: EntityType; ids: string[]; onDeleted?: () => void };
 
 type ShellContext = {
+  /** Path and query the server rendered this page for (see useShellLocation). */
+  serverUrl: string | null;
   cookieMode: Mode;
   setMode: (mode: Mode) => void;
   paletteOpen: boolean;
@@ -38,10 +40,12 @@ const Ctx = createContext<ShellContext | null>(null);
 export function ShellProvider({
   initialMode,
   canEdit,
+  serverUrl,
   children,
 }: {
   initialMode: Mode;
   canEdit: boolean;
+  serverUrl: string | null;
   children: React.ReactNode;
 }) {
   const router = useRouter();
@@ -89,12 +93,12 @@ export function ShellProvider({
 
   const value = useMemo(
     () => ({
-      cookieMode, setMode, paletteOpen, setPaletteOpen, canEdit,
+      serverUrl, cookieMode, setMode, paletteOpen, setPaletteOpen, canEdit,
       recordForm, openRecordForm, closeRecordForm, quickAddOpen, setQuickAddOpen, searchVersion, invalidateSearch,
       deleteRequest, requestDelete, closeDeleteRequest,
     }),
     [
-      cookieMode, setMode, paletteOpen, canEdit, recordForm, openRecordForm, closeRecordForm, quickAddOpen, searchVersion, invalidateSearch,
+      serverUrl, cookieMode, setMode, paletteOpen, canEdit, recordForm, openRecordForm, closeRecordForm, quickAddOpen, searchVersion, invalidateSearch,
       deleteRequest, requestDelete, closeDeleteRequest,
     ],
   );
@@ -107,17 +111,40 @@ export function useShell(): ShellContext {
   return ctx;
 }
 
-/** Effective mode on this page view. Uses useSearchParams, so render inside <Suspense>. */
+const noSubscribe = () => () => {};
+
+/**
+ * The address the shell renders for. While React hydrates, that is the address the server HTML was
+ * rendered for; right after, the router's live one. The shell's Suspense boundaries hydrate after
+ * the page body, so a link in the page can move the router to a new page first; reading the live
+ * address during hydration then renders another page's title, filters or highlight (E2E-3).
+ * (useSyncExternalStore uses the server snapshot exactly while hydrating, then re-renders.)
+ * Uses useSearchParams, so render inside <Suspense>.
+ */
+export function useShellLocation(): { pathname: string; searchParams: URLSearchParams } {
+  const { serverUrl } = useShell();
+  const livePathname = usePathname();
+  const liveParams = useSearchParams();
+  const hydrating = useSyncExternalStore(noSubscribe, () => false, () => true);
+  const server = useMemo(() => {
+    if (serverUrl == null) return null;
+    const url = new URL(serverUrl, "http://server");
+    return { pathname: url.pathname, searchParams: url.searchParams };
+  }, [serverUrl]);
+  if (hydrating && server) return server;
+  return { pathname: livePathname, searchParams: liveParams };
+}
+
+/** Effective mode on this page view. Render inside <Suspense> (see useShellLocation). */
 export function useMode(): { mode: Mode; overridden: boolean; setMode: (m: Mode) => void } {
   const { cookieMode, setMode } = useShell();
-  const urlMode = parseMode(useSearchParams().get(MODE_PARAM));
+  const urlMode = parseMode(useShellLocation().searchParams.get(MODE_PARAM));
   return { mode: resolveMode(urlMode, cookieMode), overridden: urlMode != null && urlMode !== cookieMode, setMode };
 }
 
 /** Navigate to `href` carrying the current filter params (but not `mode`). */
 export function useHrefWithFilters() {
-  const params = useSearchParams();
-  const pathname = usePathname();
+  const { pathname, searchParams: params } = useShellLocation();
   return useCallback(
     (href: string) => {
       const [path, query = ""] = href.split("?");

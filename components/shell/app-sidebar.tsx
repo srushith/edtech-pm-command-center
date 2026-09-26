@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { Building2, LogOut, Settings, Trash2 } from "lucide-react";
 import {
   Sidebar,
@@ -29,7 +29,7 @@ import { DATA_SECTION, SECTIONS, SETTINGS_SECTION, sectionForPath, type Section 
 import { MODE_LABELS } from "@/lib/mode";
 import type { WorkspaceSummary } from "@/lib/auth/access";
 import { ROLE_LABELS } from "@/lib/auth/roles";
-import { useHrefWithFilters, useMode } from "@/components/shell/shell-context";
+import { useHrefWithFilters, useMode, useShellLocation } from "@/components/shell/shell-context";
 import { WorkspaceSwitcher } from "@/components/shell/workspace-switcher";
 import { signOutAction } from "@/app/(dashboard)/actions";
 
@@ -63,9 +63,8 @@ export function AppSidebar({
   workspaces: WorkspaceSummary[];
   currentWorkspaceId: string;
 }) {
-  const pathname = usePathname();
   const router = useRouter();
-  const current = sectionForPath(pathname);
+  const current = sectionForPath(useShellLocation().pathname);
   const workspace = workspaces.find((w) => w.id === currentWorkspaceId);
   const { mode } = useMode();
   const { setOpenMobile } = useSidebar();

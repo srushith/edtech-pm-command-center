@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { Search } from "lucide-react";
 import { AIModeChip } from "@/components/ai-mode-chip";
 import { Button } from "@/components/ui/button";
@@ -11,15 +10,14 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { FilterBar } from "@/components/shell/filter-bar";
 import { ModeToggle } from "@/components/shell/mode-toggle";
 import { ThemeToggle } from "@/components/shell/theme-toggle";
-import { useShell } from "@/components/shell/shell-context";
+import { useShell, useShellLocation } from "@/components/shell/shell-context";
 import { sectionForPath } from "@/lib/nav";
 import type { FilterOptions } from "@/lib/data/filters";
 
 export type TopBarAI = { label: string; detail: string; kind: string; canConfigure: boolean };
 
 export function TopBar({ filterOptions, ai }: { filterOptions: FilterOptions; ai: TopBarAI }) {
-  const pathname = usePathname();
-  const section = sectionForPath(pathname);
+  const section = sectionForPath(useShellLocation().pathname);
   const { setPaletteOpen } = useShell();
 
   return (

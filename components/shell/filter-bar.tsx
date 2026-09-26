@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { CalendarRange, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useShellLocation } from "@/components/shell/shell-context";
 import { cn } from "@/lib/utils";
 import type { FilterOptions } from "@/lib/data/filters";
 import {
@@ -132,8 +133,7 @@ function DateRangePicker({ state, onChange }: { state: FilterState; onChange: (s
 
 export function FilterBar({ options }: { options: FilterOptions }) {
   const router = useRouter();
-  const pathname = usePathname();
-  const params = useSearchParams();
+  const { pathname, searchParams: params } = useShellLocation();
   const state = parseFilters(params);
 
   const update = (patch: Partial<FilterState>) => {
