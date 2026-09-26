@@ -262,8 +262,8 @@ describe("permanent deletion", () => {
     const launch = await s.launch.findFirstOrThrow({});
     const items = await s.checklistItem.count({ where: { launchId: launch.id } });
     await deleteRecords(editor, "launch", [launch.id], launch.name, NOW);
-    const module = await s.module.findFirstOrThrow({});
-    await deleteRecords(editor, "module", [module.id], module.title, NOW);
+    const mod = await s.module.findFirstOrThrow({});
+    await deleteRecords(editor, "module", [mod.id], mod.title, NOW);
     const r = await emptyTrash(owner, NOW);
     assert.equal(r.items, 2);
     assert.ok(r.removed >= 2 + items);
